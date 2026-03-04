@@ -84,24 +84,109 @@ def handle_chatbot_flow(job_page, job_url: str) -> bool:
     """
     try:
         drawer = job_page.locator("div.chatbot_DrawerContentWrapper")
-        drawer.wait_for(state="visible", timeout=8_000)
+        drawer.wait_for(state="visible", timeout=10_000)
     except PlaywrightTimeoutError:
         return False
 
     print(f"Chatbot flow detected for: {job_url}")
 
-    # Minimal safe handling: wait briefly to allow bot auto-submit/transition.
-    time.sleep(2)
+    max_question_cycles = 20
+    max_retries_per_question = 3
+    question_wait_timeout_ms = 8_000
+    applied_confirmation_timeout_ms = 4_000
 
-    applied_text = job_page.locator("div.job-title-text", has_text="Applied to")
-    if applied_text.count() > 0:
+    def application_confirmed(timeout_ms: int) -> bool:
+        applied_text = job_page.locator("div.job-title-text", has_text="Applied to")
         try:
-            applied_text.first.wait_for(state="visible", timeout=6_000)
+            applied_text.first.wait_for(state="visible", timeout=timeout_ms)
             return True
         except PlaywrightTimeoutError:
             return False
 
-    return False
+    def extract_latest_question() -> str:
+        candidates = drawer.locator("div.botMsg.msg, div.botMsg, div.msg.botMsg")
+        count = candidates.count()
+        for idx in range(count - 1, -1, -1):
+            try:
+                text = candidates.nth(idx).inner_text(timeout=1_500).strip()
+            except (PlaywrightTimeoutError, Error):
+                continue
+            if text:
+                return text
+        return ""
+
+    def submit_text_answer() -> bool:
+        text_input = drawer.locator(
+            "textarea:visible, input[type='text']:visible, input:not([type]):visible"
+        ).first
+        try:
+            text_input.wait_for(state="visible", timeout=2_500)
+            text_input.fill("Yes")
+            text_input.press("Enter")
+            return True
+        except (PlaywrightTimeoutError, Error):
+            pass
+
+        send_button = drawer.locator("button:visible", has_text="Send")
+        try:
+            send_button.first.click(timeout=1_500)
+            return True
+        except (PlaywrightTimeoutError, Error):
+            return False
+
+    def submit_radio_answer() -> bool:
+        options = drawer.locator("input[type='radio']:visible")
+        try:
+            if options.count() == 0:
+                return False
+            options.first.check(timeout=2_000)
+            return True
+        except (PlaywrightTimeoutError, Error):
+            return False
+
+    seen_question_attempts: dict[str, int] = {}
+
+    for _ in range(max_question_cycles):
+        # Direct success state can appear before any question message is rendered.
+        if application_confirmed(timeout_ms=1_000):
+            return True
+
+        latest_question = ""
+        try:
+            drawer.locator("div.botMsg.msg, div.botMsg, div.msg.botMsg").last.wait_for(
+                state="visible", timeout=question_wait_timeout_ms
+            )
+            latest_question = extract_latest_question()
+        except PlaywrightTimeoutError:
+            if application_confirmed(timeout_ms=applied_confirmation_timeout_ms):
+                return True
+            continue
+
+        if not latest_question:
+            if application_confirmed(timeout_ms=applied_confirmation_timeout_ms):
+                return True
+            continue
+
+        if "thank you for your responses" in latest_question.lower():
+            return application_confirmed(timeout_ms=12_000)
+
+        attempts = seen_question_attempts.get(latest_question, 0)
+        if attempts >= max_retries_per_question:
+            print(f"Reached retry limit for question: {latest_question}")
+            return False
+        seen_question_attempts[latest_question] = attempts + 1
+
+        handled = submit_radio_answer()
+        if not handled:
+            handled = submit_text_answer()
+        if not handled:
+            print(f"No compatible answer handler found for question: {latest_question}")
+            return False
+
+        # Allow chatbot to render next state before next polling cycle.
+        time.sleep(1)
+
+    return application_confirmed(timeout_ms=8_000)
 
 
 def process_job_link(context, job_url: str, state: ApplyState) -> None:
