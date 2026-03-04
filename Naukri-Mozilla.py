@@ -1,239 +1,116 @@
-import csv
-import json
-import logging
-import time
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional
-
-from bs4 import BeautifulSoup
+import argparse
+import pandas as pd
 from selenium import webdriver
-from selenium.common.exceptions import (
-    NoSuchElementException,
-    TimeoutException,
-    WebDriverException,
-)
+from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+
+from delay_utils import human_delay, maybe_cooldown
 
 
-@dataclass
-class RunConfig:
-    profile_path: str = ""  # Add your Firefox profile root path.
-    page_start: int = 1
-    page_end: int = 2
-    max_applications: int = 50
-    page_load_delay_s: float = 3.0
-    post_apply_delay_s: float = 2.0
-    answer_store_path: str = "answers.json"
-    summary_dir: str = "run_summaries"
-    keywords: List[str] = field(default_factory=lambda: [""])
-    location: str = ""
-    firstname: str = ""
-    lastname: str = ""
+firstname=''                        #Add your LastName
+lastname=''                         #Add your FirstName
+joblink=[]                          #Initialized list to store links
+maxcount=50                         #Max daily apply quota for Naukri
+keywords=['','']                    #Add you list of role you want to apply
+location = ''                       #Add your location/city name for within India or remote
+applied =0                          #Count of jobs applied sucessfully
+failed = 0                          #Count of Jobs failed
+applied_list={
+    'passed':[],
+    'failed':[]
+}                                   #Saved list of applied and failed job links for manual review
+BASE_URL_TEMPLATE = "https://www.naukri.com/software-artificial-intelligence-genai-ai-ml-jobs-{page}?k=software%2C%20artificial%20intelligence%2C%20genai%2C%20ai%2Fml&nignbevent_src=jobsearchDeskGNB&jobAge=15&cityTypeGid=6&cityTypeGid=17&cityTypeGid=73&cityTypeGid=97&cityTypeGid=134&cityTypeGid=138&cityTypeGid=220&cityTypeGid=323&cityTypeGid=350&cityTypeGid=9011&cityTypeGid=9508&cityTypeGid=9509&experience=6"
 
 
-def load_answers(path: str) -> Dict[str, str]:
-    answer_file = Path(path)
-    if not answer_file.exists():
-        logging.info("Answer store not found, continuing with empty answers: %s", answer_file)
-        return {}
-    try:
-        return json.loads(answer_file.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        logging.warning("Could not parse answer store %s: %s", answer_file, exc)
-        return {}
+parser = argparse.ArgumentParser(description='Naukri Mozilla auto-apply with human-like delays.')
+parser.add_argument('--min-delay', type=float, default=2.0, help='Minimum random delay in seconds.')
+parser.add_argument('--max-delay', type=float, default=4.0, help='Maximum random delay in seconds.')
+parser.add_argument('--cooldown-every', type=int, default=0, help='Take a longer break every N successful applies (0 disables).')
+parser.add_argument('--cooldown-min-delay', type=float, default=15.0, help='Minimum cooldown delay in seconds.')
+parser.add_argument('--cooldown-max-delay', type=float, default=30.0, help='Maximum cooldown delay in seconds.')
+args = parser.parse_args()
 
 
-def init_driver(config: RunConfig) -> webdriver.Firefox:
-    try:
-        profile = webdriver.FirefoxProfile(config.profile_path)
-        return webdriver.Firefox(profile)
-    except WebDriverException as exc:
-        logging.error("Failed to initialize Firefox driver with profile '%s': %s", config.profile_path, exc)
-        raise
-
-
-def build_search_url(keyword: str, location: str, page: int) -> str:
-    key_slug = keyword.lower().replace(" ", "-")
-    if location:
-        loc_slug = location.lower().replace(" ", "-")
-        return f"https://www.naukri.com/{key_slug}-jobs-in-{loc_slug}-{page}"
-    return f"https://www.naukri.com/{key_slug}-{page}"
-
-
-def collect_job_links(driver: webdriver.Firefox, config: RunConfig) -> List[str]:
-    job_links: List[str] = []
-    for keyword in config.keywords:
-        for page in range(config.page_start, config.page_end + 1):
-            url = build_search_url(keyword, config.location, page)
-            driver.get(url)
-            logging.info("Scanning search page: %s", url)
-            time.sleep(config.page_load_delay_s)
-
-            soup = BeautifulSoup(driver.page_source, "html5lib")
-            results = soup.find(class_="list")
-            if not results:
-                logging.warning("No job list container found on search page: %s", url)
-                continue
-
-            job_elements = results.find_all("article", class_="jobTuple bgWhite br4 mb-8")
-            for job_elem in job_elements:
-                anchor = job_elem.find("a", class_="title fw500 ellipsis")
-                if anchor and anchor.get("href"):
-                    job_links.append(anchor.get("href"))
-                else:
-                    logging.debug("Skipped malformed job card on page: %s", url)
-    return job_links
-
-
-def _is_present(driver: webdriver.Firefox, xpath: str) -> bool:
-    try:
-        driver.find_element(By.XPATH, xpath)
-        return True
-    except NoSuchElementException:
-        return False
-
-
-def _save_job_result(job_results: List[Dict[str, str]], url: str, status: str, detail: str = "") -> None:
-    job_results.append({"job_url": url, "status": status, "detail": detail})
-
-
-def apply_to_job(
-    driver: webdriver.Firefox,
-    url: str,
-    config: RunConfig,
-    outcomes: Dict[str, int],
-    answers: Dict[str, str],
-    job_results: List[Dict[str, str]],
-) -> None:
+try:
+    profile = webdriver.FirefoxProfile("") #Add your Root directory path
+    driver = webdriver.Firefox(profile)
+except Exception as e:
+    print('Webdriver exception')
+time.sleep(10)
+all_links = set()
+for i in range(21):
+    page = i + 1
+    url = BASE_URL_TEMPLATE.format(page=page)
     driver.get(url)
-    time.sleep(config.page_load_delay_s)
+    print(url)
+    time.sleep(3)
+    soup = BeautifulSoup(driver.page_source,'html5lib')
+    results = soup.find(class_='list')
+    if not results:
+        print(f'No job list section found on page {page}, skipping')
+        continue
 
-    if not _is_present(driver, "//*[text()='Apply']"):
-        outcomes["skipped_non_apply"] += 1
-        _save_job_result(job_results, url, "skipped_non_apply", "Apply button not found")
-        logging.info("Skipped (non-apply): %s", url)
-        return
+    job_elems = results.find_all('article',class_='jobTuple bgWhite br4 mb-8')
+    if not job_elems:
+        print(f'No job cards found on page {page}, skipping')
+        continue
 
-    try:
-        WebDriverWait(driver, 8).until(EC.element_to_be_clickable((By.XPATH, "//*[text()='Apply']"))).click()
-        time.sleep(config.post_apply_delay_s)
-    except TimeoutException as exc:
-        outcomes["failed_timeout"] += 1
-        _save_job_result(job_results, url, "failed_timeout", f"Apply button timeout: {exc}")
-        logging.warning("Apply timeout for %s: %s", url, exc)
-        return
-    except WebDriverException as exc:
-        outcomes["failed_unknown"] += 1
-        _save_job_result(job_results, url, "failed_unknown", f"Apply click failed: {exc}")
-        logging.error("Apply click failed for %s: %s", url, exc)
-        return
+    page_links = set()
+    for job_elem in job_elems:
+        link_tag = job_elem.find('a',class_='title fw500 ellipsis')
+        if not link_tag:
+            continue
+        href = link_tag.get('href')
+        if not href:
+            continue
+        page_links.add(href)
 
-    if _is_present(driver, "//*[contains(text(),'Chat')]") or _is_present(driver, "//*[contains(text(),'bot')]"):
-        outcomes["applied_chatbot"] += 1
-        _save_job_result(job_results, url, "applied_chatbot", "Chatbot flow triggered")
+    new_links = page_links - all_links
+    all_links.update(new_links)
+    joblink.extend(new_links)
+
+
+for i in joblink:
+    human_delay(args.min_delay, args.max_delay, 'between jobs')
+    driver.get(i)
+    if applied <=maxcount:
+        try:
+            human_delay(args.min_delay, args.max_delay, 'before clicking Apply')
+            driver.find_element_by_xpath("//*[text()='Apply']").click()
+            human_delay(args.min_delay, args.max_delay, 'post apply click settle')
+            applied +=1
+            applied_list['passed'].append(i)
+            print('Applied for ',i, " Count", applied)
+            maybe_cooldown(applied, args.cooldown_every, args.cooldown_min_delay, args.cooldown_max_delay)
+
+        except Exception as e:
+            failed+=1
+            applied_list['failed'].append(i)
+            print(e, "Failed " ,failed)
+        try:
+            if driver.find_element_by_xpath("//*[text()='Your daily quota has been expired.']"):
+                print('MAX Limit reached closing browser')
+                driver.close()
+                break
+            if driver.find_element_by_xpath("//*[text()=' 1. First Name']"):
+                driver.find_element_by_xpath("//input[@id='CUSTOM-FIRSTNAME']").send_keys(firstname)
+            if driver.find_element_by_xpath("//*[text()=' 2. Last Name']"):
+                driver.find_element_by_xpath("//input[@id='CUSTOM-LASTNAME']").send_keys(lastname)
+            if driver.find_element_by_xpath("//*[text()='Submit and Apply']"):
+                human_delay(args.min_delay, args.max_delay, 'before submitting additional answers')
+                driver.find_element_by_xpath("//*[text()='Submit and Apply']").click()
+        except:
+            pass
+
     else:
-        outcomes["applied_direct"] += 1
-        _save_job_result(job_results, url, "applied_direct", "Direct apply click successful")
-
-    try:
-        if _is_present(driver, "//*[text()=' 1. First Name']"):
-            first_name = driver.find_element(By.XPATH, "//input[@id='CUSTOM-FIRSTNAME']")
-            first_name.clear()
-            first_name.send_keys(config.firstname or answers.get("firstname", ""))
-
-        if _is_present(driver, "//*[text()=' 2. Last Name']"):
-            last_name = driver.find_element(By.XPATH, "//input[@id='CUSTOM-LASTNAME']")
-            last_name.clear()
-            last_name.send_keys(config.lastname or answers.get("lastname", ""))
-
-        if _is_present(driver, "//*[text()='Submit and Apply']"):
-            driver.find_element(By.XPATH, "//*[text()='Submit and Apply']").click()
-    except NoSuchElementException as exc:
-        outcomes["failed_unknown"] += 1
-        _save_job_result(job_results, url, "failed_unknown", f"Application form element missing: {exc}")
-        logging.warning("Application form issue for %s: %s", url, exc)
-    except WebDriverException as exc:
-        outcomes["failed_unknown"] += 1
-        _save_job_result(job_results, url, "failed_unknown", f"Application form interaction failed: {exc}")
-        logging.error("Application form interaction failed for %s: %s", url, exc)
-
-
-def write_run_summary(
-    config: RunConfig,
-    outcomes: Dict[str, int],
-    job_results: List[Dict[str, str]],
-) -> None:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    summary_root = Path(config.summary_dir)
-    summary_root.mkdir(parents=True, exist_ok=True)
-
-    payload = {
-        "timestamp": timestamp,
-        "config": asdict(config),
-        "outcomes": outcomes,
-        "total_jobs": len(job_results),
-        "job_results": job_results,
-    }
-
-    json_path = summary_root / f"naukri_run_summary_{timestamp}.json"
-    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-    csv_path = summary_root / f"naukri_run_summary_{timestamp}.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["timestamp", "job_url", "status", "detail"])
-        writer.writeheader()
-        for row in job_results:
-            writer.writerow({"timestamp": timestamp, **row})
-
-    logging.info("Run summary written to %s and %s", json_path, csv_path)
-
-
-def run(config: Optional[RunConfig] = None) -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-    )
-    cfg = config or RunConfig()
-    answers = load_answers(cfg.answer_store_path)
-
-    outcomes = {
-        "applied_direct": 0,
-        "applied_chatbot": 0,
-        "skipped_non_apply": 0,
-        "failed_timeout": 0,
-        "failed_unknown": 0,
-    }
-    job_results: List[Dict[str, str]] = []
-
-    driver: Optional[webdriver.Firefox] = None
-    try:
-        driver = init_driver(cfg)
-        time.sleep(cfg.page_load_delay_s)
-        job_links = collect_job_links(driver, cfg)
-
-        for url in job_links:
-            successful_count = outcomes["applied_direct"] + outcomes["applied_chatbot"]
-            if successful_count >= cfg.max_applications:
-                logging.info("Reached max applications (%s), stopping.", cfg.max_applications)
-                break
-
-            if _is_present(driver, "//*[text()='Your daily quota has been expired.']"):
-                logging.info("Naukri daily quota reached, stopping early.")
-                break
-
-            apply_to_job(driver, url, cfg, outcomes, answers, job_results)
-
-    except WebDriverException as exc:
-        logging.exception("WebDriver failure ended run: %s", exc)
-    finally:
-        if driver:
-            driver.quit()
-        write_run_summary(cfg, outcomes, job_results)
-
-
-if __name__ == "__main__":
-    run()
+        driver.close()
+        break
+print('Completed applying closing browser saving in applied jobs csv')
+try:
+    driver.close()
+except:
+    pass
+csv_file = "naukriapplied.csv"
+final_dict= dict ([(k, pd.Series(v)) for k,v in applied_list.items()])
+df = pd.DataFrame.from_dict(final_dict)
+df.to_csv(csv_file, index = False)

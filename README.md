@@ -20,7 +20,16 @@ Automation that applies to jobs on Naukri.com easily for fatster job hunting and
 - Please note this script was built in selenium version 4
 
 
-## Refactored Mozilla runner highlights
-- Uses a `RunConfig` dataclass for profile path, page range, delays, max applications, and answer store path configuration.
-- Adds explicit outcome tracking: `applied_direct`, `applied_chatbot`, `skipped_non_apply`, `failed_timeout`, `failed_unknown`.
-- Writes per-run JSON and CSV summaries under `run_summaries/` with timestamped filenames and per-job statuses.
+## Pacing / delay controls
+Both scripts now support delay controls to mimic human timing and debug pacing decisions.
+
+Example:
+- `python Naukri-Mozilla.py --min-delay 1.5 --max-delay 3.5 --cooldown-every 10 --cooldown-min-delay 20 --cooldown-max-delay 45`
+- `python Naukri-Edge.py --min-delay 1.5 --max-delay 3.5 --cooldown-every 10 --cooldown-min-delay 20 --cooldown-max-delay 45`
+
+Arguments:
+- `--min-delay` / `--max-delay`: random delay range used before apply clicks, submit actions, and between jobs/pages.
+- `--cooldown-every`: apply an optional longer cool-down every N successful applications (`0` disables).
+- `--cooldown-min-delay` / `--cooldown-max-delay`: random delay range for the periodic cool-down.
+
+Each delay is logged to stdout with reason and selected duration.
