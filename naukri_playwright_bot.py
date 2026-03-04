@@ -21,7 +21,7 @@ from delay_utils import human_delay, maybe_cooldown
 T = TypeVar("T")
 
 # ---------- User configuration ----------
-FIREFOX_PROFILE_PATH = ""  # Existing Firefox profile path used for persisted login.
+FIREFOX_PROFILE_PATH = "C:\\Users\\Kunal Vartia\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\\ynlhysj3.NaukriBot"  # Existing Firefox profile path used for persisted login.
 MAX_APPLY_COUNT = 100
 CSV_FILE = "naukriapplied.csv"
 QA_MEMORY_FILE = "qa_memory.json"
