@@ -19,3 +19,8 @@ Automation that applies to jobs on Naukri.com easily for fatster job hunting and
 - Run the Naukri-autoapply bot by python Naukri-Edge.py
 - Please note this script was built in selenium version 4
 
+
+## Refactored Mozilla runner highlights
+- Uses a `RunConfig` dataclass for profile path, page range, delays, max applications, and answer store path configuration.
+- Adds explicit outcome tracking: `applied_direct`, `applied_chatbot`, `skipped_non_apply`, `failed_timeout`, `failed_unknown`.
+- Writes per-run JSON and CSV summaries under `run_summaries/` with timestamped filenames and per-job statuses.
