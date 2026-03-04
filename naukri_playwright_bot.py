@@ -6,6 +6,7 @@ profile-based login reuse and adding robust waits/retries.
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 import time
@@ -15,6 +16,8 @@ from typing import Callable, TypeVar
 import pandas as pd
 from playwright.sync_api import Error, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
+from delay_utils import human_delay, maybe_cooldown
+
 T = TypeVar("T")
 
 # ---------- User configuration ----------
@@ -23,6 +26,9 @@ MAX_APPLY_COUNT = 100
 CSV_FILE = "naukriapplied.csv"
 QA_MEMORY_FILE = "qa_memory.json"
 HEADLESS = False
+DEFAULT_MIN_DELAY_SECONDS = 0.6
+DEFAULT_MAX_DELAY_SECONDS = 1.6
+DEFAULT_COOLDOWN_EVERY_N_SUCCESS = 0
 # ---------------------------------------
 
 
@@ -32,6 +38,47 @@ class ApplyState:
     failed: int = 0
     passed_links: list[str] = field(default_factory=list)
     failed_links: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DelayConfig:
+    min_delay_seconds: float = DEFAULT_MIN_DELAY_SECONDS
+    max_delay_seconds: float = DEFAULT_MAX_DELAY_SECONDS
+    cooldown_every_n_success: int = DEFAULT_COOLDOWN_EVERY_N_SUCCESS
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Playwright-based Naukri auto-apply bot")
+    parser.add_argument(
+        "--min-delay-seconds",
+        type=float,
+        default=DEFAULT_MIN_DELAY_SECONDS,
+        help="Minimum randomized delay (seconds) for each human-like wait.",
+    )
+    parser.add_argument(
+        "--max-delay-seconds",
+        type=float,
+        default=DEFAULT_MAX_DELAY_SECONDS,
+        help="Maximum randomized delay (seconds) for each human-like wait.",
+    )
+    parser.add_argument(
+        "--cooldown-every-n-success",
+        type=int,
+        default=DEFAULT_COOLDOWN_EVERY_N_SUCCESS,
+        help="Apply an extra cooldown after every N successful applications (0 disables).",
+    )
+    return parser.parse_args()
+
+
+def make_delay_config(args: argparse.Namespace) -> DelayConfig:
+    min_delay_seconds = max(0.0, args.min_delay_seconds)
+    max_delay_seconds = max(min_delay_seconds, args.max_delay_seconds)
+    cooldown_every_n_success = max(0, args.cooldown_every_n_success)
+    return DelayConfig(
+        min_delay_seconds=min_delay_seconds,
+        max_delay_seconds=max_delay_seconds,
+        cooldown_every_n_success=cooldown_every_n_success,
+    )
 
 
 def normalize_question(question: str) -> str:
@@ -121,7 +168,13 @@ def collect_job_links(listing_page) -> list[str]:
     return list(dict.fromkeys(links))
 
 
-def handle_chatbot_flow(job_page, job_url: str, qa_memory: dict[str, str], memory_path: Path) -> bool:
+def handle_chatbot_flow(
+    job_page,
+    job_url: str,
+    qa_memory: dict[str, str],
+    memory_path: Path,
+    delay_config: DelayConfig,
+) -> bool:
     """Handle chatbot drawer flow in a dedicated function.
 
     Returns True if application appears to be completed, else False.
@@ -167,6 +220,11 @@ def handle_chatbot_flow(job_page, job_url: str, qa_memory: dict[str, str], memor
             text_input.wait_for(state="visible", timeout=2_500)
             text_input.fill(answer)
             text_input.press("Enter")
+            human_delay(
+                delay_config.min_delay_seconds,
+                delay_config.max_delay_seconds,
+                "post-send text answer delay",
+            )
             return True
         except (PlaywrightTimeoutError, Error):
             pass
@@ -174,6 +232,11 @@ def handle_chatbot_flow(job_page, job_url: str, qa_memory: dict[str, str], memor
         send_button = drawer.locator("button:visible", has_text="Send")
         try:
             send_button.first.click(timeout=1_500)
+            human_delay(
+                delay_config.min_delay_seconds,
+                delay_config.max_delay_seconds,
+                "post-click Send button delay",
+            )
             return True
         except (PlaywrightTimeoutError, Error):
             return False
@@ -237,6 +300,11 @@ def handle_chatbot_flow(job_page, job_url: str, qa_memory: dict[str, str], memor
         save_control = drawer.locator("div.sendMsg[tabindex='0']:visible", has_text="Save")
         try:
             save_control.first.click(timeout=2_000)
+            human_delay(
+                delay_config.min_delay_seconds,
+                delay_config.max_delay_seconds,
+                "post-click Save button delay",
+            )
             return True
         except (PlaywrightTimeoutError, Error):
             return False
@@ -283,7 +351,11 @@ def handle_chatbot_flow(job_page, job_url: str, qa_memory: dict[str, str], memor
             return False
 
         # Allow chatbot to render next state before next polling cycle.
-        time.sleep(1)
+        human_delay(
+            delay_config.min_delay_seconds,
+            delay_config.max_delay_seconds,
+            "between chatbot question responses",
+        )
 
     return application_confirmed(timeout_ms=8_000)
 
@@ -294,7 +366,13 @@ def process_job_link(
     state: ApplyState,
     qa_memory: dict[str, str],
     memory_path: Path,
+    delay_config: DelayConfig,
 ) -> None:
+    human_delay(
+        delay_config.min_delay_seconds,
+        delay_config.max_delay_seconds,
+        "before opening each job tab",
+    )
     job_page = context.new_page()  # Open in new tab; listing page remains open.
     try:
         with_retry(lambda: job_page.goto(job_url, wait_until="domcontentloaded", timeout=30_000))
@@ -309,6 +387,11 @@ def process_job_link(
             state.failed_links.append(job_url)
             return
 
+        human_delay(
+            delay_config.min_delay_seconds,
+            delay_config.max_delay_seconds,
+            "before clicking Apply",
+        )
         with_retry(lambda: apply_button.click(timeout=8_000))
 
         confirmation = job_page.locator("div.job-title-text", has_text="Applied to")
@@ -321,7 +404,13 @@ def process_job_link(
         except PlaywrightTimeoutError:
             try:
                 chatbot_drawer.first.wait_for(state="visible", timeout=4_000)
-                applied_successfully = handle_chatbot_flow(job_page, job_url, qa_memory, memory_path)
+                applied_successfully = handle_chatbot_flow(
+                    job_page,
+                    job_url,
+                    qa_memory,
+                    memory_path,
+                    delay_config,
+                )
             except PlaywrightTimeoutError:
                 applied_successfully = False
 
@@ -351,6 +440,9 @@ def save_results(state: ApplyState) -> None:
 
 
 def run() -> None:
+    args = parse_args()
+    delay_config = make_delay_config(args)
+
     if not FIREFOX_PROFILE_PATH:
         raise ValueError("Set FIREFOX_PROFILE_PATH to your existing Firefox profile path.")
 
@@ -374,7 +466,23 @@ def run() -> None:
                 if state.applied >= MAX_APPLY_COUNT:
                     print("Reached MAX_APPLY_COUNT, stopping.")
                     break
-                process_job_link(context, link, state, qa_memory, memory_path)
+
+                prior_applied = state.applied
+                process_job_link(context, link, state, qa_memory, memory_path, delay_config)
+
+                if state.applied > prior_applied:
+                    maybe_cooldown(
+                        state.applied,
+                        delay_config.cooldown_every_n_success,
+                        delay_config.min_delay_seconds,
+                        delay_config.max_delay_seconds,
+                    )
+
+                human_delay(
+                    delay_config.min_delay_seconds,
+                    delay_config.max_delay_seconds,
+                    "between job completions and page transitions",
+                )
 
         finally:
             context.close()
