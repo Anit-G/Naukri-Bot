@@ -20,6 +20,7 @@ applied_list={
     'passed':[],
     'failed':[]
 }                                   #Saved list of applied and failed job links for manual review
+BASE_URL_TEMPLATE = "https://www.naukri.com/software-artificial-intelligence-genai-ai-ml-jobs-{page}?k=software%2C%20artificial%20intelligence%2C%20genai%2C%20ai%2Fml&nignbevent_src=jobsearchDeskGNB&jobAge=15&cityTypeGid=6&cityTypeGid=17&cityTypeGid=73&cityTypeGid=97&cityTypeGid=134&cityTypeGid=138&cityTypeGid=220&cityTypeGid=323&cityTypeGid=350&cityTypeGid=9011&cityTypeGid=9508&cityTypeGid=9509&experience=6"
 edgedriverfile = r'''filepath'''  #Please add your filepath here
 yournaukriemail = ''
 yournaukripass = ''
@@ -44,23 +45,38 @@ try:
 
 except Exception as e:
     print('Webdriver exception')
+time.sleep(10)
+all_links = set()
+for i in range(21):
+    page = i + 1
+    url = BASE_URL_TEMPLATE.format(page=page)
+    driver.get(url)
+    print(url)
+    time.sleep(3)
+    soup = BeautifulSoup(driver.page_source,'html5lib')
+    results = soup.find(class_='list')
+    if not results:
+        print(f'No job list section found on page {page}, skipping')
+        continue
 
-human_delay(args.min_delay, args.max_delay, 'initial login warm-up')
-for k in keywords:
-    for i in range(2):
-        human_delay(args.min_delay, args.max_delay, 'between result pages')
-        if location=='':
-            url = "https://www.naukri.com/"+k.lower().replace(' ','-')+"-"+str(i+1)
-        else:
-            url = "https://www.naukri.com/"+k.lower().replace(' ','-')+"-jobs-in-"+location.lower().replace(' ','-')+"-"+str(i+1)
-        driver.get(url)
-        print(url)
-        human_delay(args.min_delay, args.max_delay, 'allow results page to load')
-        soup = BeautifulSoup(driver.page_source,'html5lib')
-        results = soup.find(class_='list')
-        job_elems = results.find_all('article',class_='jobTuple bgWhite br4 mb-8')
-        for job_elem in job_elems:
-            joblink.append(job_elem.find('a',class_='title fw500 ellipsis').get('href'))
+    job_elems = results.find_all('article',class_='jobTuple bgWhite br4 mb-8')
+    if not job_elems:
+        print(f'No job cards found on page {page}, skipping')
+        continue
+
+    page_links = set()
+    for job_elem in job_elems:
+        link_tag = job_elem.find('a',class_='title fw500 ellipsis')
+        if not link_tag:
+            continue
+        href = link_tag.get('href')
+        if not href:
+            continue
+        page_links.add(href)
+
+    new_links = page_links - all_links
+    all_links.update(new_links)
+    joblink.extend(new_links)
 
 
 for i in joblink:
