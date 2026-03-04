@@ -2,6 +2,7 @@ import argparse
 import pandas as pd
 from selenium import webdriver
 from bs4 import BeautifulSoup
+from selenium.webdriver.common.by import By
 
 from delay_utils import human_delay, maybe_cooldown
 
