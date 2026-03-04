@@ -6,6 +6,8 @@ profile-based login reuse and adding robust waits/retries.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import time
 from dataclasses import dataclass, field
 from typing import Callable, TypeVar
@@ -19,6 +21,7 @@ T = TypeVar("T")
 FIREFOX_PROFILE_PATH = ""  # Existing Firefox profile path used for persisted login.
 MAX_APPLY_COUNT = 100
 CSV_FILE = "naukriapplied.csv"
+QA_MEMORY_FILE = "qa_memory.json"
 HEADLESS = False
 # ---------------------------------------
 
@@ -29,6 +32,47 @@ class ApplyState:
     failed: int = 0
     passed_links: list[str] = field(default_factory=list)
     failed_links: list[str] = field(default_factory=list)
+
+
+def normalize_question(question: str) -> str:
+    """Normalize question text for consistent memory lookups."""
+    return " ".join(question.strip().lower().split())
+
+
+def load_qa_memory(path: Path) -> dict[str, str]:
+    """Load persisted question-answer memory from disk."""
+    if not path.exists():
+        return {}
+
+    try:
+        content = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"Could not load QA memory from {path}: {exc}")
+        return {}
+
+    if isinstance(content, dict):
+        return {str(k): str(v) for k, v in content.items()}
+    return {}
+
+
+def save_qa_memory(path: Path, qa_memory: dict[str, str]) -> None:
+    """Persist question-answer memory to disk."""
+    path.write_text(json.dumps(qa_memory, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def get_or_capture_answer(question: str, qa_memory: dict[str, str], memory_path: Path) -> str:
+    """Return answer from memory or capture and persist a new answer from terminal input."""
+    key = normalize_question(question)
+    if key in qa_memory:
+        answer = qa_memory[key]
+        print(f"[QA Memory] Using stored answer for question: {question} -> {answer}")
+        return answer
+
+    answer = input(f"[QA Memory] Enter answer for question: {question}\n> ").strip()
+    qa_memory[key] = answer
+    save_qa_memory(memory_path, qa_memory)
+    print(f"[QA Memory] Captured and saved new answer for question: {question}")
+    return answer
 
 
 def with_retry(fn: Callable[[], T], attempts: int = 3, delay_seconds: float = 1.5) -> T:
@@ -77,7 +121,7 @@ def collect_job_links(listing_page) -> list[str]:
     return list(dict.fromkeys(links))
 
 
-def handle_chatbot_flow(job_page, job_url: str) -> bool:
+def handle_chatbot_flow(job_page, job_url: str, qa_memory: dict[str, str], memory_path: Path) -> bool:
     """Handle chatbot drawer flow in a dedicated function.
 
     Returns True if application appears to be completed, else False.
@@ -115,13 +159,13 @@ def handle_chatbot_flow(job_page, job_url: str) -> bool:
                 return text
         return ""
 
-    def submit_text_answer() -> bool:
+    def submit_text_answer(answer: str) -> bool:
         text_input = drawer.locator(
             "textarea:visible, input[type='text']:visible, input:not([type]):visible"
         ).first
         try:
             text_input.wait_for(state="visible", timeout=2_500)
-            text_input.fill("Yes")
+            text_input.fill(answer)
             text_input.press("Enter")
             return True
         except (PlaywrightTimeoutError, Error):
@@ -134,11 +178,34 @@ def handle_chatbot_flow(job_page, job_url: str) -> bool:
         except (PlaywrightTimeoutError, Error):
             return False
 
-    def submit_radio_answer() -> bool:
+    def submit_radio_answer(answer: str) -> bool:
         options = drawer.locator("input[type='radio']:visible")
+        option_count = options.count()
+        if option_count == 0:
+            return False
+
+        normalized_answer = answer.strip().lower()
+        for idx in range(option_count):
+            option = options.nth(idx)
+            option_id = option.get_attribute("id")
+            option_value = (option.get_attribute("value") or "").strip().lower()
+            option_label = ""
+            if option_id:
+                try:
+                    option_label = (
+                        drawer.locator(f"label[for='{option_id}']").first.inner_text(timeout=1_000).strip().lower()
+                    )
+                except (PlaywrightTimeoutError, Error):
+                    option_label = ""
+
+            if normalized_answer and normalized_answer in {option_value, option_label}:
+                try:
+                    option.check(timeout=2_000)
+                    return True
+                except (PlaywrightTimeoutError, Error):
+                    return False
+
         try:
-            if options.count() == 0:
-                return False
             options.first.check(timeout=2_000)
             return True
         except (PlaywrightTimeoutError, Error):
@@ -176,9 +243,11 @@ def handle_chatbot_flow(job_page, job_url: str) -> bool:
             return False
         seen_question_attempts[latest_question] = attempts + 1
 
-        handled = submit_radio_answer()
+        answer = get_or_capture_answer(latest_question, qa_memory, memory_path)
+
+        handled = submit_radio_answer(answer)
         if not handled:
-            handled = submit_text_answer()
+            handled = submit_text_answer(answer)
         if not handled:
             print(f"No compatible answer handler found for question: {latest_question}")
             return False
@@ -189,7 +258,13 @@ def handle_chatbot_flow(job_page, job_url: str) -> bool:
     return application_confirmed(timeout_ms=8_000)
 
 
-def process_job_link(context, job_url: str, state: ApplyState) -> None:
+def process_job_link(
+    context,
+    job_url: str,
+    state: ApplyState,
+    qa_memory: dict[str, str],
+    memory_path: Path,
+) -> None:
     job_page = context.new_page()  # Open in new tab; listing page remains open.
     try:
         with_retry(lambda: job_page.goto(job_url, wait_until="domcontentloaded", timeout=30_000))
@@ -216,7 +291,7 @@ def process_job_link(context, job_url: str, state: ApplyState) -> None:
         except PlaywrightTimeoutError:
             try:
                 chatbot_drawer.first.wait_for(state="visible", timeout=4_000)
-                applied_successfully = handle_chatbot_flow(job_page, job_url)
+                applied_successfully = handle_chatbot_flow(job_page, job_url, qa_memory, memory_path)
             except PlaywrightTimeoutError:
                 applied_successfully = False
 
@@ -250,6 +325,9 @@ def run() -> None:
         raise ValueError("Set FIREFOX_PROFILE_PATH to your existing Firefox profile path.")
 
     state = ApplyState()
+    memory_path = Path(QA_MEMORY_FILE)
+    qa_memory = load_qa_memory(memory_path)
+    print(f"Loaded {len(qa_memory)} QA memory entries from {memory_path}.")
 
     with sync_playwright() as playwright:
         context = playwright.firefox.launch_persistent_context(
@@ -266,7 +344,7 @@ def run() -> None:
                 if state.applied >= MAX_APPLY_COUNT:
                     print("Reached MAX_APPLY_COUNT, stopping.")
                     break
-                process_job_link(context, link, state)
+                process_job_link(context, link, state, qa_memory, memory_path)
 
         finally:
             context.close()
