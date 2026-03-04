@@ -1,139 +1,195 @@
-"""Playwright helpers for handling Naukri Easy Apply chatbot flows."""
+"""Playwright-based Naukri auto-apply bot.
+
+This module migrates the legacy Selenium flow to Playwright sync API while preserving
+profile-based login reuse and adding robust waits/retries.
+"""
 
 from __future__ import annotations
 
 import time
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Callable, TypeVar
 
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
+import pandas as pd
+from playwright.sync_api import Error, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
+T = TypeVar("T")
 
-def _normalize_text(value: str) -> str:
-    return " ".join(value.split()).strip().lower()
-
-
-def _resolve_answer(question: str, options: list[str], answer_store: dict[str, Any]) -> str:
-    """Resolve a chatbot answer from configured mappings."""
-    normalized_question = _normalize_text(question)
-
-    for key in (question, normalized_question):
-        if key in answer_store:
-            answer = answer_store[key]
-            return str(answer(options, question) if callable(answer) else answer).strip()
-
-    default_answer = answer_store.get("default")
-    if callable(default_answer):
-        return str(default_answer(options, question)).strip()
-    if isinstance(default_answer, str):
-        return default_answer.strip()
-
-    if options:
-        return options[0]
-
-    return ""
+# ---------- User configuration ----------
+FIREFOX_PROFILE_PATH = ""  # Existing Firefox profile path used for persisted login.
+KEYWORDS = [""]  # Add desired role keywords.
+LOCATION = ""  # e.g. "bangalore" or keep "" for all.
+MAX_APPLY_COUNT = 100
+CSV_FILE = "naukriapplied.csv"
+HEADLESS = False
+# ---------------------------------------
 
 
-def handle_chatbot(
-    page: Page,
-    answer_store: dict[str, Any],
-    *,
-    per_job_timeout_s: int = 120,
-    poll_interval_s: float = 0.75,
-) -> bool:
+@dataclass
+class ApplyState:
+    applied: int = 0
+    failed: int = 0
+    passed_links: list[str] = field(default_factory=list)
+    failed_links: list[str] = field(default_factory=list)
+
+
+def with_retry(fn: Callable[[], T], attempts: int = 3, delay_seconds: float = 1.5) -> T:
+    """Retry transient Playwright failures."""
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except (PlaywrightTimeoutError, Error) as exc:
+            last_exc = exc
+            if attempt < attempts:
+                time.sleep(delay_seconds)
+    assert last_exc is not None
+    raise last_exc
+
+
+def build_search_url(keyword: str, location: str, i: int) -> str:
+    """Build URL using original template with `{i+1}` substitution."""
+    slug = keyword.lower().replace(" ", "-")
+    if location.strip() == "":
+        return f"https://www.naukri.com/{slug}-{i + 1}"
+    location_slug = location.lower().replace(" ", "-")
+    return f"https://www.naukri.com/{slug}-jobs-in-{location_slug}-{i + 1}"
+
+
+def collect_job_links(listing_page, keywords: list[str], location: str) -> list[str]:
+    links: list[str] = []
+
+    for keyword in keywords:
+        for i in range(21):  # i = 0..20
+            url = build_search_url(keyword, location, i)
+            print(f"Opening listing page: {url}")
+            with_retry(lambda: listing_page.goto(url, wait_until="domcontentloaded", timeout=30_000))
+
+            anchors = listing_page.locator("div.srp-jobtuple-wrapper a.title[href]")
+            with_retry(lambda: anchors.first.wait_for(state="visible", timeout=12_000))
+
+            count = anchors.count()
+            for idx in range(count):
+                href = anchors.nth(idx).get_attribute("href")
+                if href:
+                    links.append(href)
+
+    # Keep order while removing duplicates.
+    return list(dict.fromkeys(links))
+
+
+def handle_chatbot_flow(job_page, job_url: str) -> bool:
+    """Handle chatbot drawer flow in a dedicated function.
+
+    Returns True if application appears to be completed, else False.
     """
-    Handle Naukri chatbot questions until application is complete or timeout.
-
-    Returns True when completion text/state is detected, otherwise False.
-    """
-    deadline = time.monotonic() + per_job_timeout_s
-    answered_questions: set[str] = set()
-
     try:
-        page.wait_for_selector("div.chatbot_DrawerContentWrapper", timeout=15_000)
+        drawer = job_page.locator("div.chatbot_DrawerContentWrapper")
+        drawer.wait_for(state="visible", timeout=8_000)
     except PlaywrightTimeoutError:
         return False
 
-    while time.monotonic() < deadline:
-        if page.locator("text=Thank you for your responses").count() > 0:
+    print(f"Chatbot flow detected for: {job_url}")
+
+    # Minimal safe handling: wait briefly to allow bot auto-submit/transition.
+    time.sleep(2)
+
+    applied_text = job_page.locator("div.job-title-text", has_text="Applied to")
+    if applied_text.count() > 0:
+        try:
+            applied_text.first.wait_for(state="visible", timeout=6_000)
             return True
-        if (
-            page.locator("div.job-title-text", has_text="Applied to").count() > 0
-            or page.locator("text=Applied to").count() > 0
-        ):
-            return True
-
-        bot_messages = page.locator("div.botMsg.msg")
-        if bot_messages.count() == 0:
-            time.sleep(poll_interval_s)
-            continue
-
-        latest_question = bot_messages.last.inner_text().strip()
-        normalized_question = _normalize_text(latest_question)
-        if not normalized_question or normalized_question in answered_questions:
-            time.sleep(poll_interval_s)
-            continue
-
-        radio_selector = "div.ssrc__radio-btn-container input[type='radio']"
-        text_selector = "div.textArea[contenteditable='true']"
-        save_selector = "[id^='sendMsg__'] div.sendMsg, div.sendMsg"
-
-        if page.locator(radio_selector).count() > 0:
-            radios = page.locator(radio_selector)
-            options: list[str] = []
-            chosen_radio = None
-            for idx in range(radios.count()):
-                radio = radios.nth(idx)
-                option_text = (
-                    radio.evaluate(
-                        """
-                        (el) => {
-                            const label = el.closest('label') || document.querySelector(`label[for='${el.id}']`);
-                            return (label ? label.innerText : el.value || '').trim();
-                        }
-                        """
-                    )
-                    or ""
-                ).strip()
-                options.append(option_text)
-
-            answer = _resolve_answer(latest_question, options, answer_store)
-            for idx in range(radios.count()):
-                if _normalize_text(options[idx]) == _normalize_text(answer):
-                    chosen_radio = radios.nth(idx)
-                    break
-
-            if chosen_radio is None:
-                chosen_radio = radios.first
-
-            chosen_radio.check(force=True)
-            save_btn = page.locator(save_selector).last
-            if save_btn.count() > 0:
-                save_btn.click()
-
-            answered_questions.add(normalized_question)
-            page.wait_for_timeout(900)
-            continue
-
-        if page.locator(text_selector).count() > 0:
-            answer = _resolve_answer(latest_question, [], answer_store)
-            if answer:
-                text_box = page.locator(text_selector).last
-                text_box.click()
-                page.keyboard.press("Control+A")
-                page.keyboard.type(answer)
-                page.keyboard.press("Enter")
-                page.wait_for_timeout(300)
-
-                # Fallback save click if Enter didn't submit.
-                if page.locator("div.botMsg.msg").last.inner_text().strip() == latest_question:
-                    save_btn = page.locator(save_selector).last
-                    if save_btn.count() > 0:
-                        save_btn.click()
-
-                answered_questions.add(normalized_question)
-                page.wait_for_timeout(900)
-                continue
-
-        time.sleep(poll_interval_s)
+        except PlaywrightTimeoutError:
+            return False
 
     return False
+
+
+def process_job_link(context, job_url: str, state: ApplyState) -> None:
+    job_page = context.new_page()  # Open in new tab; listing page remains open.
+    try:
+        with_retry(lambda: job_page.goto(job_url, wait_until="domcontentloaded", timeout=30_000))
+
+        apply_button = job_page.locator("#apply-button")
+        with_retry(lambda: apply_button.wait_for(state="visible", timeout=12_000))
+        apply_text = apply_button.inner_text().strip()
+
+        if apply_text != "Apply":
+            print(f"Skipping non-exact apply button text '{apply_text}' for: {job_url}")
+            state.failed += 1
+            state.failed_links.append(job_url)
+            return
+
+        with_retry(lambda: apply_button.click(timeout=8_000))
+
+        confirmation = job_page.locator("div.job-title-text", has_text="Applied to")
+        chatbot_drawer = job_page.locator("div.chatbot_DrawerContentWrapper")
+
+        applied_successfully = False
+        try:
+            confirmation.first.wait_for(state="visible", timeout=6_000)
+            applied_successfully = True
+        except PlaywrightTimeoutError:
+            try:
+                chatbot_drawer.first.wait_for(state="visible", timeout=4_000)
+                applied_successfully = handle_chatbot_flow(job_page, job_url)
+            except PlaywrightTimeoutError:
+                applied_successfully = False
+
+        if applied_successfully:
+            state.applied += 1
+            state.passed_links.append(job_url)
+            print(f"Applied successfully: {job_url} | Count: {state.applied}")
+        else:
+            state.failed += 1
+            state.failed_links.append(job_url)
+            print(f"Apply flow incomplete: {job_url}")
+
+    except Exception as exc:  # noqa: BLE001 - log and continue next job.
+        state.failed += 1
+        state.failed_links.append(job_url)
+        print(f"Failed for {job_url}: {exc}")
+    finally:
+        job_page.close()
+
+
+def save_results(state: ApplyState) -> None:
+    final_dict = {
+        "passed": pd.Series(state.passed_links),
+        "failed": pd.Series(state.failed_links),
+    }
+    pd.DataFrame.from_dict(final_dict).to_csv(CSV_FILE, index=False)
+
+
+def run() -> None:
+    if not FIREFOX_PROFILE_PATH:
+        raise ValueError("Set FIREFOX_PROFILE_PATH to your existing Firefox profile path.")
+
+    state = ApplyState()
+
+    with sync_playwright() as playwright:
+        context = playwright.firefox.launch_persistent_context(
+            user_data_dir=FIREFOX_PROFILE_PATH,
+            headless=HEADLESS,
+        )
+
+        try:
+            listing_page = context.pages[0] if context.pages else context.new_page()
+            job_links = collect_job_links(listing_page, KEYWORDS, LOCATION)
+            print(f"Collected {len(job_links)} unique job links.")
+
+            for link in job_links:
+                if state.applied >= MAX_APPLY_COUNT:
+                    print("Reached MAX_APPLY_COUNT, stopping.")
+                    break
+                process_job_link(context, link, state)
+
+        finally:
+            context.close()
+
+    save_results(state)
+    print("Completed run. Results saved to naukriapplied.csv")
+
+
+if __name__ == "__main__":
+    run()
