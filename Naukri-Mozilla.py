@@ -1,4 +1,5 @@
 import argparse
+import time
 import pandas as pd
 from selenium import webdriver
 from bs4 import BeautifulSoup
