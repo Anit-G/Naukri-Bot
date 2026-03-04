@@ -178,35 +178,65 @@ def handle_chatbot_flow(job_page, job_url: str, qa_memory: dict[str, str], memor
         except (PlaywrightTimeoutError, Error):
             return False
 
-    def submit_radio_answer(answer: str) -> bool:
-        options = drawer.locator("input[type='radio']:visible")
+    def submit_radio_answer(question: str, answer: str) -> bool:
+        options = drawer.locator("div.ssrc__radio-btn-container input[type='radio']:visible")
         option_count = options.count()
         if option_count == 0:
             return False
 
-        normalized_answer = answer.strip().lower()
-        for idx in range(option_count):
-            option = options.nth(idx)
-            option_id = option.get_attribute("id")
-            option_value = (option.get_attribute("value") or "").strip().lower()
-            option_label = ""
-            if option_id:
-                try:
-                    option_label = (
-                        drawer.locator(f"label[for='{option_id}']").first.inner_text(timeout=1_000).strip().lower()
-                    )
-                except (PlaywrightTimeoutError, Error):
-                    option_label = ""
+        def normalize_option(value: str) -> str:
+            return " ".join(value.strip().lower().split())
 
-            if normalized_answer and normalized_answer in {option_value, option_label}:
-                try:
-                    option.check(timeout=2_000)
-                    return True
-                except (PlaywrightTimeoutError, Error):
-                    return False
+        def resolve_matching_option(provided_answer: str):
+            normalized_answer = normalize_option(provided_answer)
+            if not normalized_answer:
+                return None
+
+            for idx in range(option_count):
+                option = options.nth(idx)
+                option_value = normalize_option(option.get_attribute("value") or "")
+
+                option_label = ""
+                option_id = option.get_attribute("id")
+                if option_id:
+                    label_locator = drawer.locator(f"label[for='{option_id}']")
+                    if label_locator.count() > 0:
+                        try:
+                            option_label = normalize_option(label_locator.first.inner_text(timeout=1_000))
+                        except (PlaywrightTimeoutError, Error):
+                            option_label = ""
+
+                if normalized_answer in {option_value, option_label}:
+                    return option
+            return None
+
+        selected_option = resolve_matching_option(answer)
+        if selected_option is None:
+            corrected_answer = input(
+                f"[QA Memory] No exact radio option match found for question: {question}\n"
+                "Enter corrected option label/value exactly as shown:\n> "
+            ).strip()
+
+            if not corrected_answer:
+                return False
+
+            key = normalize_question(question)
+            qa_memory[key] = corrected_answer
+            save_qa_memory(memory_path, qa_memory)
+            print(f"[QA Memory] Updated stored answer for question: {question} -> {corrected_answer}")
+
+            selected_option = resolve_matching_option(corrected_answer)
+            if selected_option is None:
+                return False
 
         try:
-            options.first.check(timeout=2_000)
+            selected_option.check(timeout=2_000)
+        except (PlaywrightTimeoutError, Error):
+            return False
+
+        save_control = drawer.locator("div.sendMsg[tabindex='0']:visible", has_text="Save")
+        try:
+            save_control.first.click(timeout=2_000)
             return True
         except (PlaywrightTimeoutError, Error):
             return False
@@ -245,7 +275,7 @@ def handle_chatbot_flow(job_page, job_url: str, qa_memory: dict[str, str], memor
 
         answer = get_or_capture_answer(latest_question, qa_memory, memory_path)
 
-        handled = submit_radio_answer(answer)
+        handled = submit_radio_answer(latest_question, answer)
         if not handled:
             handled = submit_text_answer(answer)
         if not handled:
