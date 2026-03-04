@@ -17,8 +17,6 @@ T = TypeVar("T")
 
 # ---------- User configuration ----------
 FIREFOX_PROFILE_PATH = ""  # Existing Firefox profile path used for persisted login.
-KEYWORDS = [""]  # Add desired role keywords.
-LOCATION = ""  # e.g. "bangalore" or keep "" for all.
 MAX_APPLY_COUNT = 100
 CSV_FILE = "naukriapplied.csv"
 HEADLESS = False
@@ -47,32 +45,33 @@ def with_retry(fn: Callable[[], T], attempts: int = 3, delay_seconds: float = 1.
     raise last_exc
 
 
-def build_search_url(keyword: str, location: str, i: int) -> str:
-    """Build URL using original template with `{i+1}` substitution."""
-    slug = keyword.lower().replace(" ", "-")
-    if location.strip() == "":
-        return f"https://www.naukri.com/{slug}-{i + 1}"
-    location_slug = location.lower().replace(" ", "-")
-    return f"https://www.naukri.com/{slug}-jobs-in-{location_slug}-{i + 1}"
+FILTERED_LISTING_URL_TEMPLATE = (
+    "https://www.naukri.com/software-artificial-intelligence-genai-ai-ml-jobs-{page}"
+    "?k=software%20artificial%20intelligence%20genai%20ai%20ml&experience=6"
+)
 
 
-def collect_job_links(listing_page, keywords: list[str], location: str) -> list[str]:
+def build_filtered_url(page_index: int) -> str:
+    """Build listing URL for saved filters with page number as `page_index + 1`."""
+    return FILTERED_LISTING_URL_TEMPLATE.format(page=page_index + 1)
+
+
+def collect_job_links(listing_page) -> list[str]:
     links: list[str] = []
 
-    for keyword in keywords:
-        for i in range(21):  # i = 0..20
-            url = build_search_url(keyword, location, i)
-            print(f"Opening listing page: {url}")
-            with_retry(lambda: listing_page.goto(url, wait_until="domcontentloaded", timeout=30_000))
+    for page_index in range(21):  # i = 0..20
+        url = build_filtered_url(page_index)
+        print(f"Opening listing page: {url}")
+        with_retry(lambda: listing_page.goto(url, wait_until="domcontentloaded", timeout=30_000))
 
-            anchors = listing_page.locator("div.srp-jobtuple-wrapper a.title[href]")
-            with_retry(lambda: anchors.first.wait_for(state="visible", timeout=12_000))
+        anchors = listing_page.locator("div.srp-jobtuple-wrapper a.title[href]")
+        with_retry(lambda: anchors.first.wait_for(state="visible", timeout=12_000))
 
-            count = anchors.count()
-            for idx in range(count):
-                href = anchors.nth(idx).get_attribute("href")
-                if href:
-                    links.append(href)
+        count = anchors.count()
+        for idx in range(count):
+            href = anchors.nth(idx).get_attribute("href")
+            if href:
+                links.append(href)
 
     # Keep order while removing duplicates.
     return list(dict.fromkeys(links))
@@ -175,7 +174,7 @@ def run() -> None:
 
         try:
             listing_page = context.pages[0] if context.pages else context.new_page()
-            job_links = collect_job_links(listing_page, KEYWORDS, LOCATION)
+            job_links = collect_job_links(listing_page)
             print(f"Collected {len(job_links)} unique job links.")
 
             for link in job_links:
