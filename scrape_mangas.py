@@ -37,7 +37,7 @@ BASE_URL_TEMPLATE = (
     + CHAPTER_ID + "-chapter-{chapter_num}"
 )
 
-START_CHAPTER = 1
+START_CHAPTER = 49
 END_CHAPTER   = 233
 
 OUTPUT_DIR = Path("comix_output")   # root output folder
