@@ -38,7 +38,7 @@ BASE_URL_TEMPLATE = (
 )
 
 START_CHAPTER = 49
-END_CHAPTER   = 233
+END_CHAPTER   = 50
 
 OUTPUT_DIR = Path("comix_output")   # root output folder
 IMAGES_DIR = OUTPUT_DIR / "images"  # per-chapter image sub-folders
@@ -50,30 +50,49 @@ IMG_LOAD_WAIT    = 3     # seconds to wait after final key press before scraping
 REQUEST_TIMEOUT  = 30    # seconds for image download
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
-
 def make_driver() -> webdriver.Chrome:
     opts = Options()
-    opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--window-size=1280,900")
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=opts)
+    # Try newer headless flag, fall back if needed
+    try_flags = ["--headless=new", "--headless"]
+    for flag in try_flags:
+        opts = Options()
+        opts.add_argument(flag)
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--window-size=1280,900")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--disable-software-rasterizer")
+        # don't set user-data-dir in GH Actions (permissions), unless you understand it
+        try:
+            service = Service(ChromeDriverManager().install())
+            drv = webdriver.Chrome(service=service, options=opts)
+            # success
+            return drv
+        except Exception as exc:
+            # try next flag
+            print(f"Headless flag {flag} failed: {exc}")
+            continue
+    # If we get here raise the last exception
+    raise RuntimeError("Failed to start Chrome with compatible headless flag / chromedriver.")
 
 
-def press_down_to_load(driver: webdriver.Chrome) -> None:
-    """Press the DOWN arrow key DOWN_KEY_PRESSES times to trigger lazy-loading."""
-    body = driver.find_element(By.TAG_NAME, "body")
-    for i in range(DOWN_KEY_PRESSES):
-        body.send_keys(Keys.ARROW_DOWN)
-        time.sleep(DOWN_KEY_PAUSE)
-    time.sleep(IMG_LOAD_WAIT)
+def scroll_to_load(driver: webdriver.Chrome, passes: int = 50, px_per_pass: int = 1500, pause: float = 0.2):
+    """Scroll the page in steps to trigger lazy-loading. More reliable than sending ARROW_DOWN."""
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    for _ in range(passes):
+        driver.execute_script(f"window.scrollBy(0, {px_per_pass});")
+        time.sleep(pause)
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
+            # reached bottom
+            break
+        last_height = new_height
+    # final small pause for network loads
+    time.sleep(2)
 
 
 def get_image_urls(driver: webdriver.Chrome, page_url: str) -> list[str]:
-    """Navigate to page_url, press DOWN 150×, then collect img.fit-w src values."""
     driver.get(page_url)
-    # Wait for at least one img.fit-w to appear
     try:
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "img.fit-w"))
@@ -82,9 +101,20 @@ def get_image_urls(driver: webdriver.Chrome, page_url: str) -> list[str]:
         print(f"  ⚠  No img.fit-w found on {page_url}")
         return []
 
-    print(f"  ↕  Pressing DOWN key {DOWN_KEY_PRESSES}× to load images …")
-    press_down_to_load(driver)
+    print("  ↕  Scrolling to load images …")
+    scroll_to_load(driver, passes=60, px_per_pass=1200, pause=0.12)
 
+    # wait until at least one img has a src that looks like a real URL
+    try:
+        WebDriverWait(driver, 10).until(
+            lambda d: any(
+                (img.get_attribute("src") or img.get_attribute("data-src") or "").startswith("http")
+                for img in d.find_elements(By.CSS_SELECTOR, "img.fit-w")
+            )
+        )
+    except Exception:
+        print("  ⚠  No images with http src found after scrolling.")
+        # optionally save a screenshot / page source for debugging here
     imgs = driver.find_elements(By.CSS_SELECTOR, "img.fit-w")
     urls = []
     for img in imgs:
@@ -93,7 +123,6 @@ def get_image_urls(driver: webdriver.Chrome, page_url: str) -> list[str]:
         if src and src.startswith("http"):
             urls.append(src)
     return urls
-
 
 
 def download_image(url: str, dest: Path) -> bool:
