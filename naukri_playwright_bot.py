@@ -21,14 +21,20 @@ from delay_utils import human_delay, maybe_cooldown
 T = TypeVar("T")
 
 # ---------- User configuration ----------
-FIREFOX_PROFILE_PATH = "C:\\Users\\Kunal Vartia\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\\ynlhysj3.NaukriBot"  # Existing Firefox profile path used for persisted login.
+FIREFOX_PROFILE_PATH = "./firefox-profile" # Playwright creates it own profile currently once the profile is created by playwright a user needs to login into naukri manually
 MAX_APPLY_COUNT = 100
 CSV_FILE = "naukriapplied.csv"
 QA_MEMORY_FILE = "qa_memory.json"
 HEADLESS = False
-DEFAULT_MIN_DELAY_SECONDS = 0.6
-DEFAULT_MAX_DELAY_SECONDS = 1.6
+DEFAULT_MIN_DELAY_SECONDS = 0.0
+DEFAULT_MAX_DELAY_SECONDS = 0.0
 DEFAULT_COOLDOWN_EVERY_N_SUCCESS = 0
+
+### PLEASE SET THE BELOW CONFIG VALUES ###
+MAX_PAGE_INDEX = 1
+MAX_EXPERIENCE= 6
+JOB_POSTING_KEYWORDS = ["software Developer", "AI", "GenAI", "Artificial Inteligence"] # don't use special characters just alphabets
+# TODO: Filter out jobs based on keywords, I don't want manager roles, those are bull
 # ---------------------------------------
 
 
@@ -122,7 +128,7 @@ def get_or_capture_answer(question: str, qa_memory: dict[str, str], memory_path:
     return answer
 
 
-def with_retry(fn: Callable[[], T], attempts: int = 3, delay_seconds: float = 1.5) -> T:
+def with_retry(fn: Callable[[], T], attempts: int = 3, delay_seconds: float = 0.5) -> T:
     """Retry transient Playwright failures."""
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
@@ -137,20 +143,22 @@ def with_retry(fn: Callable[[], T], attempts: int = 3, delay_seconds: float = 1.
 
 
 FILTERED_LISTING_URL_TEMPLATE = (
-    "https://www.naukri.com/software-artificial-intelligence-genai-ai-ml-jobs-{page}"
-    "?k=software%20artificial%20intelligence%20genai%20ai%20ml&experience=6"
+    "https://www.naukri.com/{jobs}-jobs-{page}?k={jobs_list}&experience={experience}"
 )
 
 
 def build_filtered_url(page_index: int) -> str:
     """Build listing URL for saved filters with page number as `page_index + 1`."""
-    return FILTERED_LISTING_URL_TEMPLATE.format(page=page_index + 1)
+    return FILTERED_LISTING_URL_TEMPLATE.format(page=page_index + 1,
+                                                experience=MAX_EXPERIENCE,
+                                                jobs_list= "%20".join([word.lower() for s in JOB_POSTING_KEYWORDS for word in s.split()]), 
+                                                jobs="-".join([word.lower() for s in JOB_POSTING_KEYWORDS for word in s.split()]))
 
 
 def collect_job_links(listing_page) -> list[str]:
     links: list[str] = []
 
-    for page_index in range(21):  # i = 0..20
+    for page_index in range(MAX_PAGE_INDEX):  
         url = build_filtered_url(page_index)
         print(f"Opening listing page: {url}")
         with_retry(lambda: listing_page.goto(url, wait_until="domcontentloaded", timeout=30_000))
@@ -368,17 +376,12 @@ def process_job_link(
     memory_path: Path,
     delay_config: DelayConfig,
 ) -> None:
-    human_delay(
-        delay_config.min_delay_seconds,
-        delay_config.max_delay_seconds,
-        "before opening each job tab",
-    )
     job_page = context.new_page()  # Open in new tab; listing page remains open.
     try:
-        with_retry(lambda: job_page.goto(job_url, wait_until="domcontentloaded", timeout=30_000))
+        with_retry(lambda: job_page.goto(job_url, wait_until="domcontentloaded", timeout=1_000))
 
-        apply_button = job_page.locator("#apply-button")
-        with_retry(lambda: apply_button.wait_for(state="visible", timeout=12_000))
+        apply_button = job_page.locator("#apply-button").first
+        with_retry(lambda: apply_button.wait_for(state="visible", timeout= 500))
         apply_text = apply_button.inner_text().strip()
 
         if apply_text != "Apply":
@@ -386,24 +389,18 @@ def process_job_link(
             state.failed += 1
             state.failed_links.append(job_url)
             return
-
-        human_delay(
-            delay_config.min_delay_seconds,
-            delay_config.max_delay_seconds,
-            "before clicking Apply",
-        )
-        with_retry(lambda: apply_button.click(timeout=8_000))
+        with_retry(lambda: apply_button.click(timeout=1_000))
 
         confirmation = job_page.locator("div.job-title-text", has_text="Applied to")
         chatbot_drawer = job_page.locator("div.chatbot_DrawerContentWrapper")
 
         applied_successfully = False
         try:
-            confirmation.first.wait_for(state="visible", timeout=6_000)
+            confirmation.first.wait_for(state="visible", timeout=2_000)
             applied_successfully = True
         except PlaywrightTimeoutError:
             try:
-                chatbot_drawer.first.wait_for(state="visible", timeout=4_000)
+                chatbot_drawer.first.wait_for(state="visible", timeout=2_000)
                 applied_successfully = handle_chatbot_flow(
                     job_page,
                     job_url,
@@ -455,6 +452,7 @@ def run() -> None:
         context = playwright.firefox.launch_persistent_context(
             user_data_dir=FIREFOX_PROFILE_PATH,
             headless=HEADLESS,
+            args=["--disable-gpu"],
         )
 
         try:
