@@ -33,6 +33,7 @@ MAX_PAGE_INDEX = 1
 MAX_EXPERIENCE= 6
 JOB_POSTING_KEYWORDS = ["software Developer", "AI", "GenAI", "Artificial Inteligence"] # don't use special characters just alphabets
 # TODO: Filter out jobs based on keywords, I don't want manager roles, those are bull
+# TODO: add recommended jobs posting section
 # ---------------------------------------
 
 
