@@ -29,8 +29,6 @@ HEADLESS = False
 DEFAULT_MIN_DELAY_SECONDS = 0.0
 DEFAULT_MAX_DELAY_SECONDS = 0.0
 DEFAULT_COOLDOWN_EVERY_N_SUCCESS = 0
-
-### PLEASE SET THE BELOW CONFIG VALUES ###
 MAX_PAGE_INDEX = 1
 MAX_EXPERIENCE= 6
 JOB_POSTING_KEYWORDS = ["software Developer", "AI", "GenAI", "Artificial Inteligence"] # don't use special characters just alphabets
@@ -249,6 +247,90 @@ def handle_chatbot_flow(
         except (PlaywrightTimeoutError, Error):
             return False
 
+    def submit_chip_answer(question: str, answer: str) -> bool:
+        """Handle chatbot chip / quick-reply button inputs.
+
+        Chips look like:
+            <div class="chatbot_Chip chipInRow chipItem"><span>Yes</span></div>
+
+        Strategy:
+          1. Exact (case-insensitive) match against chip text.
+          2. If no match, show available chips and prompt the user to pick one,
+             then persist the corrected answer back into qa_memory.
+        """
+        chips = drawer.locator("div.chatbot_Chip.chipItem:visible")
+        chip_count = chips.count()
+        if chip_count == 0:
+            return False
+
+        def normalize_chip(value: str) -> str:
+            return " ".join(value.strip().lower().split())
+
+        normalized_answer = normalize_chip(answer)
+
+        # First pass: exact match.
+        for idx in range(chip_count):
+            chip = chips.nth(idx)
+            try:
+                chip_text = normalize_chip(chip.inner_text(timeout=1_000))
+            except (PlaywrightTimeoutError, Error):
+                continue
+            if chip_text == normalized_answer:
+                try:
+                    chip.click(timeout=2_000)
+                    human_delay(
+                        delay_config.min_delay_seconds,
+                        delay_config.max_delay_seconds,
+                        "post-click chip answer delay",
+                    )
+                    return True
+                except (PlaywrightTimeoutError, Error):
+                    return False
+
+        # No exact match — collect available labels and ask the user.
+        available: list[str] = []
+        for idx in range(chip_count):
+            try:
+                available.append(chips.nth(idx).inner_text(timeout=1_000).strip())
+            except (PlaywrightTimeoutError, Error):
+                pass
+
+        corrected_answer = input(
+            f"[QA Memory] No chip match for question: {question}\n"
+            f"Available chips: {available}\n"
+            "Enter the chip label exactly as shown:\n> "
+        ).strip()
+
+        if not corrected_answer:
+            return False
+
+        key = normalize_question(question)
+        qa_memory[key] = corrected_answer
+        save_qa_memory(memory_path, qa_memory)
+        print(f"[QA Memory] Updated stored answer for question: {question} -> {corrected_answer}")
+
+        # Second pass with the corrected answer.
+        normalized_corrected = normalize_chip(corrected_answer)
+        for idx in range(chip_count):
+            chip = chips.nth(idx)
+            try:
+                chip_text = normalize_chip(chip.inner_text(timeout=1_000))
+            except (PlaywrightTimeoutError, Error):
+                continue
+            if chip_text == normalized_corrected:
+                try:
+                    chip.click(timeout=2_000)
+                    human_delay(
+                        delay_config.min_delay_seconds,
+                        delay_config.max_delay_seconds,
+                        "post-click corrected chip answer delay",
+                    )
+                    return True
+                except (PlaywrightTimeoutError, Error):
+                    return False
+
+        return False
+
     def submit_radio_answer(question: str, answer: str) -> bool:
         options = drawer.locator("div.ssrc__radio-btn-container input[type='radio']:visible")
         option_count = options.count()
@@ -351,7 +433,13 @@ def handle_chatbot_flow(
 
         answer = get_or_capture_answer(latest_question, qa_memory, memory_path)
 
-        handled = submit_radio_answer(latest_question, answer)
+        # Try each answer format in order: chips first (cheapest check), then
+        # radio buttons, then free-text. Chips are tried before radio because
+        # Naukri sometimes renders both chip and radio markup simultaneously and
+        # chips are the intended UX in that case.
+        handled = submit_chip_answer(latest_question, answer)
+        if not handled:
+            handled = submit_radio_answer(latest_question, answer)
         if not handled:
             handled = submit_text_answer(answer)
         if not handled:
