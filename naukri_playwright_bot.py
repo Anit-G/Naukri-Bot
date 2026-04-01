@@ -22,7 +22,7 @@ T = TypeVar("T")
 
 # ---------- User configuration ----------
 FIREFOX_PROFILE_PATH = "./firefox-profile" # Playwright creates it own profile currently once the profile is created by playwright a user needs to login into naukri manually
-MAX_APPLY_COUNT = 100
+MAX_APPLY_COUNT = 10
 CSV_FILE = "naukriapplied.csv"
 QA_MEMORY_FILE = "qa_memory.json"
 HEADLESS = False

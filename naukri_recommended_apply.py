@@ -189,26 +189,133 @@ def handle_chatbot_flow(
             if text:
                 return text
         return ""
+    
+    def debug_text_input(drawer) -> None:
+        """Run this to see exactly what's in the DOM before trying to fill anything."""
+        
+        # 1. Find ALL contenteditable elements (visible or not)
+        all_editables = drawer.locator("div[contenteditable='true']").all()
+        print(f"Found {len(all_editables)} contenteditable divs total")
+        for i, el in enumerate(all_editables):
+            try:
+                print(f"  [{i}] visible={el.is_visible()}, id={el.get_attribute('id')}, class={el.get_attribute('class')}, box={el.bounding_box()}")
+            except Exception as e:
+                print(f"  [{i}] error: {e}")
 
+        # 2. Check if drawer itself is actually scoped correctly
+        print(f"\nDrawer element tag: {drawer.evaluate('el => el.tagName') if hasattr(drawer, 'evaluate') else 'N/A (locator)'}")
+        
+        # 3. Try locating directly on page instead of drawer
+        page = drawer.page if hasattr(drawer, 'page') else None
+        if page:
+            page_editables = page.locator("div[contenteditable='true']").all()
+            print(f"\nFrom PAGE scope: Found {len(page_editables)} contenteditable divs")
+            for i, el in enumerate(page_editables):
+                try:
+                    print(f"  [{i}] visible={el.is_visible()}, id={el.get_attribute('id')}, class={el.get_attribute('class')}")
+                except Exception as e:
+                    print(f"  [{i}] error: {e}")
+
+        # 4. Check if the element is inside an iframe
+        frames = drawer.page.frames if hasattr(drawer, 'page') else []
+        print(f"\nNumber of frames on page: {len(frames)}")
+        for i, frame in enumerate(frames):
+            try:
+                frame_editables = frame.locator("div[contenteditable='true']").all()
+                if frame_editables:
+                    print(f"  Frame [{i}] url={frame.url} has {len(frame_editables)} editables!")
+            except Exception as e:
+                print(f"  Frame [{i}] error: {e}")
+
+        # 5. Try a raw JS inject to find and fill the element from page root
+        if page:
+            result = page.evaluate("""
+                () => {
+                    const els = document.querySelectorAll("div[contenteditable='true']");
+                    return Array.from(els).map(el => ({
+                        id: el.id,
+                        className: el.className,
+                        visible: !!(el.offsetWidth || el.offsetHeight),
+                        placeholder: el.dataset.placeholder,
+                        rect: el.getBoundingClientRect()
+                    }));
+                }
+            """)
+            print(f"\nJS querySelectorAll found: {result}")
+    
     def submit_text_answer(answer: str) -> bool:
+        editable = drawer.locator(
+            "div[contenteditable='true']:visible, div.textArea[contenteditable='true']:visible"
+        ).first
+        try:
+            editable.wait_for(state="visible", timeout=2_500)
+
+            # Step 1: Click to focus and trigger inputContainer-focus class
+            editable.click()
+            human_delay(0.1, 0.2, "post-click")
+
+            # Step 2: Clear existing content, then type naturally so Naukri's JS picks it up
+            editable.evaluate("(el) => { el.innerText = ''; el.dispatchEvent(new Event('input', {bubbles: true})); }")
+            editable.type(answer, delay=40)  # delay mimics human typing, triggers input events per keystroke
+
+            human_delay(0.1, 0.2, "post-type")
+
+            # Step 3: Try clicking the send/save button (it's a div, not a <button>)
+            # Matches: div.sendMsg, div[class*='send']:not([class*='disabled'])
+            send_clicked = False
+            for send_sel in [
+                "div.sendMsg:visible",
+                "div[class*='send']:not([class*='disabled']):visible",
+                "[id*='sendMsg']:visible",
+            ]:
+                try:
+                    btn = drawer.locator(send_sel).first
+                    btn.wait_for(state="visible", timeout=1_500)
+                    btn.click(timeout=1_500)
+                    send_clicked = True
+                    break
+                except Exception:
+                    continue
+
+            # Step 4: Fallback to Enter if no send button was clickable
+            if not send_clicked:
+                try:
+                    editable.press("Enter")
+                except Exception:
+                    pass
+
+            human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-text-answer")
+            return True
+
+        except (PlaywrightTimeoutError, Error):
+            pass
+
+        # Fallback: classic inputs (textarea / input)
         text_input = drawer.locator(
             "textarea:visible, input[type='text']:visible, input:not([type]):visible"
         ).first
         try:
             text_input.wait_for(state="visible", timeout=2_500)
-            text_input.fill(answer)
-            text_input.press("Enter")
+            try:
+                text_input.fill(answer)
+            except Exception:
+                try:
+                    text_input.evaluate(
+                        "(el, val) => { el.value = val; el.dispatchEvent(new Event('input', {bubbles:true})); }",
+                        answer,
+                    )
+                except Exception:
+                    pass
+            try:
+                text_input.press("Enter")
+            except Exception:
+                pass
             human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-text-answer")
             return True
         except (PlaywrightTimeoutError, Error):
             pass
-        send_button = drawer.locator("button:visible", has_text="Send")
-        try:
-            send_button.first.click(timeout=1_500)
-            human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-send-btn")
-            return True
-        except (PlaywrightTimeoutError, Error):
-            return False
+
+        return False
 
     def submit_chip_answer(question: str, answer: str) -> bool:
         chips = drawer.locator("div.chatbot_Chip.chipItem:visible")
@@ -264,8 +371,8 @@ def handle_chatbot_flow(
                 continue
         return False
 
-    def submit_radio_answer(question: str, answer: str) -> bool:
-        options = drawer.locator("div.ssrc__radio-btn-container input[type='radio']:visible")
+    def submit_radio_answer(question: str, answer: str) -> bool: # type: ignore
+        options = drawer.locator("div.ssrc__radio-btn-container input[type='radio']")
         option_count = options.count()
         if option_count == 0:
             return False
@@ -289,11 +396,13 @@ def handle_chatbot_flow(
                             label = norm(lbl.first.inner_text(timeout=1_000))
                         except (PlaywrightTimeoutError, Error):
                             pass
+                print(f"  [radio {idx}] value={val!r} label={label!r} -> match={n in {val, label}}")
                 if n in {val, label}:
-                    return opt
-            return None
+                    return opt, oid  # return oid so we can click the label instead
+            return None, None
 
-        selected = resolve(answer)
+        selected, selected_id = resolve(answer) # type: ignore
+
         if selected is None:
             corrected = input(
                 f"[QA Memory] No radio match for: {question!r}\n"
@@ -303,22 +412,58 @@ def handle_chatbot_flow(
                 return False
             qa_memory[normalize_question(question)] = corrected
             save_qa_memory(memory_path, qa_memory)
-            selected = resolve(corrected)
+            selected, selected_id = resolve(corrected) # type: ignore
             if selected is None:
                 return False
 
-        try:
-            selected.check(timeout=2_000)
-        except (PlaywrightTimeoutError, Error):
-            return False
+        # Click the label instead of checking the hidden input directly
+        clicked = False
+        if selected_id:
+            try:
+                label = drawer.locator(f"label[for='{selected_id}']")
+                label.first.click(timeout=2_000)
+                clicked = True
+            except (PlaywrightTimeoutError, Error):
+                pass
 
-        save_ctrl = drawer.locator("div.sendMsg[tabindex='0']:visible", has_text="Save")
-        try:
-            save_ctrl.first.click(timeout=2_000)
+        if not clicked:
+            # Fallback: force-check via JS in case input is hidden
+            try:
+                selected.evaluate("el => el.click()")
+                clicked = True
+            except Exception:
+                pass
+
+        if not clicked:
+            try:
+                selected.check(force=True, timeout=2_000)
+                clicked = True
+            except (PlaywrightTimeoutError, Error):
+                return False
+
+        human_delay(0.2, 0.4, "post-radio-click")
+
+        # Save button — try multiple selectors since nesting makes it tricky
+        saved = False
+        for sel in [
+            "[id*='sendMsg'] div.sendMsg",      # div.sendMsg nested inside the sendMsg container
+            "div.sendMsg",                       # bare class
+            "[id*='sendMsg']:not([class*='disabled'])",  # the outer wrapper when not disabled
+        ]:
+            try:
+                btn = drawer.locator(sel).first
+                btn.wait_for(state="visible", timeout=1_500)
+                btn.click(timeout=1_500)
+                saved = True
+                break
+            except (PlaywrightTimeoutError, Error):
+                continue
+
+        if saved:
             human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-save-radio")
             return True
-        except (PlaywrightTimeoutError, Error):
-            return False
+
+        return False
 
     seen_attempts: dict[str, int] = {}
 
@@ -350,14 +495,14 @@ def handle_chatbot_flow(
             print(f"Retry limit for question: {latest_q!r}")
             return False
         seen_attempts[latest_q] = attempts + 1
-
+        # debug_text_input(drawer)  # <-- run this to debug why text input might not be working
         answer = get_or_capture_answer(latest_q, qa_memory, memory_path)
-
-        handled = submit_chip_answer(latest_q, answer)
+        
+        handled = submit_text_answer(answer)
         if not handled:
             handled = submit_radio_answer(latest_q, answer)
         if not handled:
-            handled = submit_text_answer(answer)
+            handled = submit_chip_answer(latest_q, answer)
         if not handled:
             print(f"No handler matched for question: {latest_q!r}")
             return False
