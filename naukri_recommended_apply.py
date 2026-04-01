@@ -465,6 +465,103 @@ def handle_chatbot_flow(
 
         return False
 
+    def submit_checkbox_answer(question: str, answer: str) -> bool:
+        checkboxes = drawer.locator("div.multicheckboxes-container input[type='checkbox']")
+        checkbox_count = checkboxes.count()
+        if checkbox_count == 0:
+            return False
+
+        def norm(v: str) -> str:
+            return " ".join(v.strip().lower().split())
+
+        # Answer may be comma-separated for multi-select e.g. "Yes, No"
+        desired = {norm(a) for a in answer.split(",") if a.strip()}
+
+        matched = []
+        for idx in range(checkbox_count):
+            cb = checkboxes.nth(idx)
+            val = norm(cb.get_attribute("value") or "")
+            label = ""
+            cid = cb.get_attribute("id")
+            if cid:
+                lbl = drawer.locator(f"label[for='{cid}']")
+                if lbl.count() > 0:
+                    try:
+                        label = norm(lbl.first.inner_text(timeout=1_000))
+                    except (PlaywrightTimeoutError, Error):
+                        pass
+            print(f"  [checkbox {idx}] value={val!r} label={label!r}")
+            if desired & {val, label}:  # any overlap
+                matched.append((cb, cid))
+
+        if not matched:
+            corrected = input(
+                f"[QA Memory] No checkbox match for: {question!r}\n"
+                f"Available options printed above. Enter comma-separated labels/values:\n> "
+            ).strip()
+            if not corrected:
+                return False
+            qa_memory[normalize_question(question)] = corrected
+            save_qa_memory(memory_path, qa_memory)
+            desired = {norm(a) for a in corrected.split(",") if a.strip()}
+            matched = []
+            for idx in range(checkbox_count):
+                cb = checkboxes.nth(idx)
+                val = norm(cb.get_attribute("value") or "")
+                cid = cb.get_attribute("id")
+                label = ""
+                if cid:
+                    lbl = drawer.locator(f"label[for='{cid}']")
+                    if lbl.count() > 0:
+                        try:
+                            label = norm(lbl.first.inner_text(timeout=1_000))
+                        except (PlaywrightTimeoutError, Error):
+                            pass
+                if desired & {val, label}:
+                    matched.append((cb, cid))
+            if not matched:
+                return False
+
+        # Click each matched label (same trick as radio — inputs may be visually hidden)
+        for cb, cid in matched:
+            clicked = False
+            if cid:
+                try:
+                    drawer.locator(f"label[for='{cid}']").first.click(timeout=2_000)
+                    clicked = True
+                except (PlaywrightTimeoutError, Error):
+                    pass
+            if not clicked:
+                try:
+                    cb.evaluate("el => el.click()")
+                    clicked = True
+                except Exception:
+                    pass
+            if not clicked:
+                try:
+                    cb.check(force=True, timeout=2_000)
+                except (PlaywrightTimeoutError, Error):
+                    pass
+
+        human_delay(0.2, 0.4, "post-checkbox-click")
+
+        # Save button — same selectors as radio
+        for sel in [
+            "[id*='sendMsg'] div.sendMsg",
+            "div.sendMsg",
+            "[id*='sendMsg']:not([class*='disabled'])",
+        ]:
+            try:
+                btn = drawer.locator(sel).first
+                btn.wait_for(state="visible", timeout=1_500)
+                btn.click(timeout=1_500)
+                human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-save-checkbox")
+                return True
+            except (PlaywrightTimeoutError, Error):
+                continue
+
+        return False
+
     seen_attempts: dict[str, int] = {}
 
     for _ in range(max_question_cycles):
@@ -503,6 +600,8 @@ def handle_chatbot_flow(
             handled = submit_radio_answer(latest_q, answer)
         if not handled:
             handled = submit_chip_answer(latest_q, answer)
+        if not handled:
+            handled = submit_checkbox_answer(latest_q, answer)
         if not handled:
             print(f"No handler matched for question: {latest_q!r}")
             return False
