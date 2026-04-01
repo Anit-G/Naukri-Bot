@@ -1,4 +1,5 @@
 comix_output
 firefox-profile
 __pycache__
+./qa_memory.json
 qa_memory.json
