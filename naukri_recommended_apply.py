@@ -38,7 +38,7 @@ except ImportError:
             # cooldown = random.uniform(max(min_s, 5), max(max_s, 15))
             # print(f"[cooldown] After {applied} applications, sleeping {cooldown:.1f}s")
             # time.sleep(cooldown)
-            time.sleep(1.0)  # fixed short cooldown for testing
+            time.sleep(0.2)  # fixed short cooldown for testing
 
 
 T = TypeVar("T")
