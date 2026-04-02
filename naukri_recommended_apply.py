@@ -19,10 +19,11 @@ import json
 import time
 import logging
 import pandas as pd
+import random
 
 # Set up logging to a file with timestamps
 logging.basicConfig(
-    filename="Logs/naukri_recommended_apply.log",
+    filename=f"Logs/naukri_recommended_apply_{time.strftime('%Y-%m-%d_%H-%M-%S')}.log",
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
@@ -30,25 +31,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 # ---------- re-use delay helpers from the original bot ----------
 # If delay_utils.py is on the path, import it; otherwise fall back to stubs.
-try:
-    from delay_utils import human_delay, maybe_cooldown  # type: ignore
-except ImportError:
-    import random
 
-    def human_delay(min_s: float, max_s: float, label: str = "") -> None:  # type: ignore[misc]
-        if max_s > 0:
-            t = random.uniform(min_s, max_s)
-            if label:
-                print(f"[delay] {label}: {t:.2f}s")
-            time.sleep(t)
 
-    def maybe_cooldown(applied: int, every_n: int, min_s: float, max_s: float) -> None:  # type: ignore[misc]
-        if every_n > 0 and applied % every_n == 0:
-            # cooldown = random.uniform(max(min_s, 5), max(max_s, 15))
-            # print(f"[cooldown] After {applied} applications, sleeping {cooldown:.1f}s")
-            # time.sleep(cooldown)
-            time.sleep(0.2)  # fixed short cooldown for testing 
+def human_delay(min_s: float, max_s: float, label: str = "") -> None:  # type: ignore[misc]
+    if max_s > 0:
+        t = random.uniform(min_s, max_s)
+        if label:
+            logger.info(f"[delay] {label}: {t:.2f}s")
+        time.sleep(t)
 
+def maybe_cooldown(applied: int, every_n: int, min_s: float, max_s: float) -> None:  # type: ignore[misc]
+    if every_n > 0 and applied % every_n == 0:
+        # cooldown = random.uniform(max(min_s, 5), max(max_s, 15))
+        # logger.info(f"[cooldown] After {applied} applications, sleeping {cooldown:.1f}s")
+        # time.sleep(cooldown)
+        time.sleep(0.2)  # fixed short cooldown for testing 
 
 T = TypeVar("T")
 
@@ -128,7 +125,7 @@ def load_qa_memory(path: Path) -> dict[str, str]:
     try:
         content = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        print(f"Could not load QA memory from {path}: {exc}")
+        logger.info(f"Could not load QA memory from {path}: {exc}")
         return {}
     if isinstance(content, dict):
         return {str(k): str(v) for k, v in content.items()}
@@ -153,16 +150,16 @@ def get_or_capture_answer(question: str, qa_memory: dict[str, str], memory_path:
     template_qa = load_template_qa_memory()
     for keywords, answer in template_qa.items():
         if all(kw in key for kw in keywords):
-            print(f"[QA Memory] Using template answer for keywords {keywords}: {answer!r}")
+            logger.info(f"[QA Memory] Using template answer for keywords {keywords}: {answer!r}")
             return answer
     if key in qa_memory:
         answer = qa_memory[key]
-        print(f"[QA Memory] Using stored answer: {question!r} -> {answer!r}")
+        logger.info(f"[QA Memory] Using stored answer: {question!r} -> {answer!r}")
         return answer
     answer = input(f"[QA Memory] Enter answer for: {question}\n> ").strip()
     qa_memory[key] = answer
     save_qa_memory(memory_path, qa_memory)
-    print(f"[QA Memory] Saved new answer for: {question!r}")
+    logger.info(f"[QA Memory] Saved new answer for: {question!r}")
     return answer
 
 
@@ -187,7 +184,7 @@ def handle_chatbot_flow(
     except PlaywrightTimeoutError:
         return False
 
-    print(f"Chatbot flow detected for: {job_label}")
+    logger.info(f"Chatbot flow detected for: {job_label}")
 
     max_question_cycles = 20
     max_retries_per_question = 3
@@ -219,37 +216,37 @@ def handle_chatbot_flow(
         
         # 1. Find ALL contenteditable elements (visible or not)
         all_editables = drawer.locator("div[contenteditable='true']").all()
-        print(f"Found {len(all_editables)} contenteditable divs total")
+        logger.info(f"Found {len(all_editables)} contenteditable divs total")
         for i, el in enumerate(all_editables):
             try:
-                print(f"  [{i}] visible={el.is_visible()}, id={el.get_attribute('id')}, class={el.get_attribute('class')}, box={el.bounding_box()}")
+                logger.info(f"  [{i}] visible={el.is_visible()}, id={el.get_attribute('id')}, class={el.get_attribute('class')}, box={el.bounding_box()}")
             except Exception as e:
-                print(f"  [{i}] error: {e}")
+                logger.info(f"  [{i}] error: {e}")
 
         # 2. Check if drawer itself is actually scoped correctly
-        print(f"\nDrawer element tag: {drawer.evaluate('el => el.tagName') if hasattr(drawer, 'evaluate') else 'N/A (locator)'}")
+        logger.info(f"\nDrawer element tag: {drawer.evaluate('el => el.tagName') if hasattr(drawer, 'evaluate') else 'N/A (locator)'}")
         
         # 3. Try locating directly on page instead of drawer
         page = drawer.page if hasattr(drawer, 'page') else None
         if page:
             page_editables = page.locator("div[contenteditable='true']").all()
-            print(f"\nFrom PAGE scope: Found {len(page_editables)} contenteditable divs")
+            logger.info(f"\nFrom PAGE scope: Found {len(page_editables)} contenteditable divs")
             for i, el in enumerate(page_editables):
                 try:
-                    print(f"  [{i}] visible={el.is_visible()}, id={el.get_attribute('id')}, class={el.get_attribute('class')}")
+                    logger.info(f"  [{i}] visible={el.is_visible()}, id={el.get_attribute('id')}, class={el.get_attribute('class')}")
                 except Exception as e:
-                    print(f"  [{i}] error: {e}")
+                    logger.info(f"  [{i}] error: {e}")
 
         # 4. Check if the element is inside an iframe
         frames = drawer.page.frames if hasattr(drawer, 'page') else []
-        print(f"\nNumber of frames on page: {len(frames)}")
+        logger.info(f"\nNumber of frames on page: {len(frames)}")
         for i, frame in enumerate(frames):
             try:
                 frame_editables = frame.locator("div[contenteditable='true']").all()
                 if frame_editables:
-                    print(f"  Frame [{i}] url={frame.url} has {len(frame_editables)} editables!")
+                    logger.info(f"  Frame [{i}] url={frame.url} has {len(frame_editables)} editables!")
             except Exception as e:
-                print(f"  Frame [{i}] error: {e}")
+                logger.info(f"  Frame [{i}] error: {e}")
 
         # 5. Try a raw JS inject to find and fill the element from page root
         if page:
@@ -265,7 +262,7 @@ def handle_chatbot_flow(
                     }));
                 }
             """)
-            print(f"\nJS querySelectorAll found: {result}")
+            logger.info(f"\nJS querySelectorAll found: {result}")
     
     def submit_text_answer(answer: str) -> bool:
         editable = drawer.locator(
@@ -420,7 +417,7 @@ def handle_chatbot_flow(
                             label = norm(lbl.first.inner_text(timeout=1_000))
                         except (PlaywrightTimeoutError, Error):
                             pass
-                print(f"  [radio {idx}] value={val!r} label={label!r} -> match={n in {val, label}}")
+                logger.info(f"  [radio {idx}] value={val!r} label={label!r} -> match={n in {val, label}}")
                 if n in {val, label}:
                     return opt, oid  # return oid so we can click the label instead
             return None, None
@@ -514,14 +511,14 @@ def handle_chatbot_flow(
                         label = norm(lbl.first.inner_text(timeout=1_000))
                     except (PlaywrightTimeoutError, Error):
                         pass
-            print(f"  [checkbox {idx}] value={val!r} label={label!r}")
+            logger.info(f"  [checkbox {idx}] value={val!r} label={label!r}")
             if desired & {val, label}:  # any overlap
                 matched.append((cb, cid))
 
         if not matched:
             corrected = input(
                 f"[QA Memory] No checkbox match for: {question!r}\n"
-                f"Available options printed above. Enter comma-separated labels/values:\n> "
+                f"Available options logger.infoed above. Enter comma-separated labels/values:\n> "
             ).strip()
             if not corrected:
                 return False
@@ -613,7 +610,7 @@ def handle_chatbot_flow(
 
         attempts = seen_attempts.get(latest_q, 0)
         if attempts >= max_retries_per_question:
-            print(f"Retry limit for question: {latest_q!r}")
+            logger.info(f"Retry limit for question: {latest_q!r}")
             return False
         seen_attempts[latest_q] = attempts + 1
         # debug_text_input(drawer)  # <-- run this to debug why text input might not be working
@@ -628,7 +625,7 @@ def handle_chatbot_flow(
         if not handled:
             handled = submit_checkbox_answer(latest_q, answer)
         if not handled:
-            print(f"No handler matched for question: {latest_q!r}")
+            logger.info(f"No handler matched for question: {latest_q!r}")
             return False
 
         human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "between chatbot turns")
@@ -652,7 +649,7 @@ def switch_tab(page, tab_id: str) -> bool:
         page.wait_for_load_state("networkidle", timeout=10_000)
         return True
     except (PlaywrightTimeoutError, Error) as exc:
-        print(f"Could not switch to tab {tab_id!r}: {exc}")
+        logger.info(f"Could not switch to tab {tab_id!r}: {exc}")
         return False
 
 
@@ -678,12 +675,12 @@ def select_next_batch(page, batch_size: int = 5) -> list[str]:
     try:
         unselected.first.wait_for(state="visible", timeout=8_000)
     except PlaywrightTimeoutError:
-        print("No selectable job tuples found on this tab.")
+        logger.info("No selectable job tuples found on this tab.")
         return []
 
     count = unselected.count()
     if count == 0:
-        print("No unselected jobs available.")
+        logger.info("No unselected jobs available.")
         return []
 
     to_select = min(count, batch_size)
@@ -702,10 +699,10 @@ def select_next_batch(page, batch_size: int = 5) -> list[str]:
             )
             checkbox_div.click(timeout=3_000)
             selected_ids.append(job_id)
-            print(f"  Selected job {job_id} ({idx + 1}/{to_select})")
+            logger.info(f"  Selected job {job_id} ({idx + 1}/{to_select})")
             time.sleep(0.15)  # tiny gap to avoid triggering rate limits
         except (PlaywrightTimeoutError, Error) as exc:
-            print(f"  Could not select job at index {idx}: {exc}")
+            logger.info(f"  Could not select job at index {idx}: {exc}")
 
     return selected_ids
 
@@ -720,11 +717,11 @@ def click_bulk_apply_button(page) -> bool:
     try:
         btn.wait_for(state="visible", timeout=10_000)
         btn_text = btn.inner_text().strip()
-        print(f"Clicking bulk apply button: {btn_text!r}")
+        logger.info(f"Clicking bulk apply button: {btn_text!r}")
         btn.click(timeout=3_000)
         return True
     except (PlaywrightTimeoutError, Error) as exc:
-        print(f"Bulk apply button not found or not clickable: {exc}")
+        logger.info(f"Bulk apply button not found or not clickable: {exc}")
         return False
 
 
@@ -759,7 +756,7 @@ def handle_post_bulk_apply(
             )
             success_banner.first.wait_for(state="visible", timeout=2_000)
             count_applied = len(selected_ids)
-            print(f"Bulk apply confirmed for {count_applied} job(s).")
+            logger.info(f"Bulk apply confirmed for {count_applied} job(s).")
             state.applied += count_applied
             state.passed_links.extend([f"recommended-job-id:{jid}" for jid in selected_ids])
             return
@@ -773,7 +770,7 @@ def handle_post_bulk_apply(
         except PlaywrightTimeoutError:
             # No drawer and no success banner — assume done.
             if round_idx == 0:
-                print("No confirmation and no chatbot detected after bulk apply.")
+                logger.info("No confirmation and no chatbot detected after bulk apply.")
                 state.failed += len(selected_ids)
                 state.failed_links.extend([f"recommended-job-id:{jid}" for jid in selected_ids])
             return
@@ -786,17 +783,17 @@ def handle_post_bulk_apply(
         except (PlaywrightTimeoutError, Error):
             job_label = f"bulk-job-{round_idx + 1}"
 
-        print(f"[Round {round_idx + 1}] Handling chatbot for: {job_label!r}")
+        logger.info(f"[Round {round_idx + 1}] Handling chatbot for: {job_label!r}")
         success = handle_chatbot_flow(page, job_label, qa_memory, memory_path, delay_config)
 
         if success:
             state.applied += 1
             state.passed_links.append(f"recommended:{job_label}")
-            print(f"Applied successfully: {job_label} | Total: {state.applied}")
+            logger.info(f"Applied successfully: {job_label} | Total: {state.applied}")
         else:
             state.failed += 1
             state.failed_links.append(f"recommended:{job_label}")
-            print(f"Chatbot flow incomplete for: {job_label!r}")
+            logger.info(f"Chatbot flow incomplete for: {job_label!r}")
 
         human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "between chatbot rounds")
 
@@ -807,7 +804,7 @@ def handle_post_bulk_apply(
         except PlaywrightTimeoutError:
             pass  # drawer might just reload for the next job
 
-    print(f"Exited chatbot loop after {max_chatbot_rounds} rounds.")
+    logger.info(f"Exited chatbot loop after {max_chatbot_rounds} rounds.")
 
 
 # -------------------------------------------------------------- main loop ---
@@ -821,23 +818,23 @@ def run_tab(
     delay_config: DelayConfig,
 ) -> None:
     """Process all batches of jobs within a single tab until exhausted or limit hit."""
-    print(f"\n=== Processing tab: {tab_id!r} ===")
+    logger.info(f"\n=== Processing tab: {tab_id!r} ===")
 
     batch_number = 0
     while state.applied < MAX_APPLY_COUNT:
         batch_number += 1
-        print(f"\n--- Tab {tab_id!r}, Batch {batch_number} ---")
+        logger.info(f"\n--- Tab {tab_id!r}, Batch {batch_number} ---")
 
         selected_ids = select_next_batch(page, batch_size=5)
         if not selected_ids:
-            print(f"No more jobs to select in tab {tab_id!r}.")
+            logger.info(f"No more jobs to select in tab {tab_id!r}.")
             break
 
-        print(f"Selected {len(selected_ids)} job(s): {selected_ids}")
+        logger.info(f"Selected {len(selected_ids)} job(s): {selected_ids}")
 
         if not click_bulk_apply_button(page):
             # De-select by reloading the page and try again next cycle.
-            print("Could not click apply button; reloading page.")
+            logger.info("Could not click apply button; reloading page.")
             page.reload(wait_until="domcontentloaded", timeout=20_000)
             human_delay(1.0, 2.0, "after reload")
             if not switch_tab(page, tab_id):
@@ -855,12 +852,12 @@ def run_tab(
 
         # Return to the recommendations page and re-activate the same tab so
         # that newly loaded / remaining jobs are visible.
-        print("Returning to recommendations page…")
+        logger.info("Returning to recommendations page…")
         with_retry(lambda: page.goto(RECOMMENDED_JOBS_URL, wait_until="domcontentloaded", timeout=30_000))
         human_delay(1.0, 2.0, "after returning to recommendations page")
 
         if not switch_tab(page, tab_id):
-            print(f"Could not re-activate tab {tab_id!r} after returning.")
+            logger.info(f"Could not re-activate tab {tab_id!r} after returning.")
             break
 
         human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "after tab switch")
@@ -884,7 +881,7 @@ def run() -> None:
     state = ApplyState()
     memory_path = Path(QA_MEMORY_FILE)
     qa_memory = load_qa_memory(memory_path)
-    print(f"Loaded {len(qa_memory)} QA memory entries.")
+    logger.info(f"Loaded {len(qa_memory)} QA memory entries.")
 
     with sync_playwright() as playwright:
         context = playwright.firefox.launch_persistent_context(
@@ -896,17 +893,17 @@ def run() -> None:
         try:
             page = context.pages[0] if context.pages else context.new_page()
 
-            print(f"Opening recommendations page: {RECOMMENDED_JOBS_URL}")
+            logger.info(f"Opening recommendations page: {RECOMMENDED_JOBS_URL}")
             with_retry(lambda: page.goto(RECOMMENDED_JOBS_URL, wait_until="domcontentloaded", timeout=30_000))
             human_delay(1.5, 2.5, "initial page load")
 
             for tab_id in TAB_IDS:
                 if state.applied >= MAX_APPLY_COUNT:
-                    print("Reached MAX_APPLY_COUNT.")
+                    logger.info("Reached MAX_APPLY_COUNT.")
                     break
 
                 if not switch_tab(page, tab_id):
-                    print(f"Skipping tab {tab_id!r} (could not switch).")
+                    logger.info(f"Skipping tab {tab_id!r} (could not switch).")
                     continue
 
                 run_tab(page, tab_id, state, qa_memory, memory_path, delay_config)
@@ -915,7 +912,7 @@ def run() -> None:
             context.close()
 
     save_results(state)
-    print(
+    logger.info(
         f"\nDone. Applied: {state.applied}, Failed: {state.failed}. "
         f"Results saved to {CSV_FILE}."
     )
