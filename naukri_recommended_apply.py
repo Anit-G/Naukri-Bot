@@ -35,9 +35,10 @@ except ImportError:
 
     def maybe_cooldown(applied: int, every_n: int, min_s: float, max_s: float) -> None:  # type: ignore[misc]
         if every_n > 0 and applied % every_n == 0:
-            cooldown = random.uniform(max(min_s, 5), max(max_s, 15))
-            print(f"[cooldown] After {applied} applications, sleeping {cooldown:.1f}s")
-            time.sleep(cooldown)
+            # cooldown = random.uniform(max(min_s, 5), max(max_s, 15))
+            # print(f"[cooldown] After {applied} applications, sleeping {cooldown:.1f}s")
+            # time.sleep(cooldown)
+            time.sleep(1.0)  # fixed short cooldown for testing
 
 
 T = TypeVar("T")
@@ -48,9 +49,9 @@ MAX_APPLY_COUNT = 100
 CSV_FILE = "naukri_recommended_applied.csv"
 QA_MEMORY_FILE = "qa_memory.json"
 HEADLESS = False
-DEFAULT_MIN_DELAY_SECONDS = 0.5
-DEFAULT_MAX_DELAY_SECONDS = 1.5
-DEFAULT_COOLDOWN_EVERY_N_SUCCESS = 10
+DEFAULT_MIN_DELAY_SECONDS = 0.2
+DEFAULT_MAX_DELAY_SECONDS = 0.8
+DEFAULT_COOLDOWN_EVERY_N_SUCCESS = 2
 
 RECOMMENDED_JOBS_URL = "https://www.naukri.com/mnjuser/recommendedjobs"
 
