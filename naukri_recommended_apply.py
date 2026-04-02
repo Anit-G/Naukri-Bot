@@ -9,16 +9,25 @@ is reached or all tabs are exhausted.
 
 from __future__ import annotations
 
-import argparse
-import json
 from pathlib import Path
-import time
 from dataclasses import dataclass, field
 from typing import Callable, TypeVar
-
-import pandas as pd
 from playwright.sync_api import Error, TimeoutError as PlaywrightTimeoutError, sync_playwright
 
+import argparse
+import json
+import time
+import logging
+import pandas as pd
+
+# Set up logging to a file with timestamps
+logging.basicConfig(
+    filename="Logs/naukri_recommended_apply.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 # ---------- re-use delay helpers from the original bot ----------
 # If delay_utils.py is on the path, import it; otherwise fall back to stubs.
 try:
@@ -38,7 +47,7 @@ except ImportError:
             # cooldown = random.uniform(max(min_s, 5), max(max_s, 15))
             # print(f"[cooldown] After {applied} applications, sleeping {cooldown:.1f}s")
             # time.sleep(cooldown)
-            time.sleep(0.2)  # fixed short cooldown for testing
+            time.sleep(0.2)  # fixed short cooldown for testing 
 
 
 T = TypeVar("T")
@@ -125,6 +134,14 @@ def load_qa_memory(path: Path) -> dict[str, str]:
         return {str(k): str(v) for k, v in content.items()}
     return {}
 
+def load_template_qa_memory() -> dict[tuple[str, ...], str]:
+    # Be very selective with what you add here since the bot will apply these answers to any question that contains the listed keywords as substrings.
+    template_qa = {tuple(["how many years of experience"]) : "3 years",
+                   tuple(["current","ctc"]) : "20 LPA",
+                   tuple(["expected","ctc"]) : "30 LPA",
+                   tuple(["are you currently"]) : "yes",
+                   tuple(["willing to relocate"]) : "30 days"}
+    return template_qa
 
 def save_qa_memory(path: Path, qa_memory: dict[str, str]) -> None:
     path.write_text(json.dumps(qa_memory, indent=2, sort_keys=True), encoding="utf-8")
@@ -132,6 +149,12 @@ def save_qa_memory(path: Path, qa_memory: dict[str, str]) -> None:
 
 def get_or_capture_answer(question: str, qa_memory: dict[str, str], memory_path: Path) -> str:
     key = normalize_question(question)
+    
+    template_qa = load_template_qa_memory()
+    for keywords, answer in template_qa.items():
+        if all(kw in key for kw in keywords):
+            print(f"[QA Memory] Using template answer for keywords {keywords}: {answer!r}")
+            return answer
     if key in qa_memory:
         answer = qa_memory[key]
         print(f"[QA Memory] Using stored answer: {question!r} -> {answer!r}")
@@ -596,6 +619,7 @@ def handle_chatbot_flow(
         # debug_text_input(drawer)  # <-- run this to debug why text input might not be working
         answer = get_or_capture_answer(latest_q, qa_memory, memory_path)
         
+        # TODO: add ability to apply answers for substring matches in radio, chip and checkbox handlers as well
         handled = submit_text_answer(answer)
         if not handled:
             handled = submit_radio_answer(latest_q, answer)
@@ -694,7 +718,7 @@ def click_bulk_apply_button(page) -> bool:
     """
     btn = page.locator("button.multi-apply-button")
     try:
-        btn.wait_for(state="visible", timeout=5_000)
+        btn.wait_for(state="visible", timeout=10_000)
         btn_text = btn.inner_text().strip()
         print(f"Clicking bulk apply button: {btn_text!r}")
         btn.click(timeout=3_000)
