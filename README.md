@@ -15,3 +15,6 @@ Automation that applies to jobs on Naukri.com easily for faster job hunting and 
 ## Steps to take for application on recommended jobs section
 - Run naukri_recommended_apply.py
 - enjoy
+
+## Warnings:
+- If you apply enough times in one day the profile can be rate limited by default naukri will limit the number of applications a person can do per day based on the browser profile. If you run into just wait that is the best "I don't want to be banned option" or create have the scripts create a new profile.
