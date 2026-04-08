@@ -133,11 +133,16 @@ def load_qa_memory(path: Path) -> dict[str, str]:
 
 def load_template_qa_memory() -> dict[tuple[str, ...], str]:
     # Be very selective with what you add here since the bot will apply these answers to any question that contains the listed keywords as substrings.
-    template_qa = {tuple(["how many years of experience"]) : "3 years",
+    # TODO: select one of many answers
+    # TODO: add support for answering radio/chip/checkbox questions based on keyword matches, not just free text ones
+    # TODO: log job titles applied to with links and skip all job titles with certain keywords in them (e.g. "consultant", "manager", etc.)
+    template_qa = {tuple(["how many years of", "experience"]) : "3 years",
                    tuple(["current","ctc"]) : "20 LPA",
                    tuple(["expected","ctc"]) : "30 LPA",
                    tuple(["are you currently"]) : "yes",
-                   tuple(["willing to relocate"]) : "30 days"}
+                   tuple(["current location"]) : "Bangalore",
+                   tuple(["notice period"]) : "NA",
+                   tuple(["willing to relocate"]) : "yes"}
     return template_qa
 
 def save_qa_memory(path: Path, qa_memory: dict[str, str]) -> None:
