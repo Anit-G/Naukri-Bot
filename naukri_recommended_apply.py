@@ -136,36 +136,39 @@ def load_template_qa_memory() -> dict[tuple[str, ...], str]:
     # TODO: select one of many answers
     # TODO: add support for answering radio/chip/checkbox questions based on keyword matches, not just free text ones
     # TODO: log job titles applied to with links and skip all job titles with certain keywords in them (e.g. "consultant", "manager", etc.)
-    template_qa = {tuple(["how many years of", "experience"]) : "3 years",
+    template_qa = {tuple(["how many years of", "experience"]) : "3 years,3-5 years,2-3 years,3-5,1-3 years,1-3",
+                   tuple(["do you have", "experience", "in"]) : "yes",
                    tuple(["current","ctc"]) : "20 LPA",
                    tuple(["expected","ctc"]) : "30 LPA",
                    tuple(["are you currently"]) : "yes",
                    tuple(["current location"]) : "Bangalore",
-                   tuple(["notice period"]) : "NA",
-                   tuple(["willing to relocate"]) : "yes"}
+                   tuple(["currently", "residing"]) : "Bengaluru,Bangalore",
+                   tuple(["willing to relocate"]) : "yes",
+                   tuple(["notice", "period"]) : "2 months,1 month,30 days",
+                   tuple(["pan", "number"]) : "HWULX6881T",}
     return template_qa
 
 def save_qa_memory(path: Path, qa_memory: dict[str, str]) -> None:
     path.write_text(json.dumps(qa_memory, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def get_or_capture_answer(question: str, qa_memory: dict[str, str], memory_path: Path) -> str:
+def get_or_capture_answer(question: str, qa_memory: dict[str, str], memory_path: Path) -> tuple[str, int]:
     key = normalize_question(question)
     
     template_qa = load_template_qa_memory()
     for keywords, answer in template_qa.items():
         if all(kw in key for kw in keywords):
             logger.info(f"[QA Memory] Using template answer for keywords {keywords}: {answer!r}")
-            return answer
+            return answer, 1
     if key in qa_memory:
         answer = qa_memory[key]
         logger.info(f"[QA Memory] Using stored answer: {question!r} -> {answer!r}")
-        return answer
+        return answer, 0
     answer = input(f"[QA Memory] Enter answer for: {question}\n> ").strip()
     qa_memory[key] = answer
     save_qa_memory(memory_path, qa_memory)
     logger.info(f"[QA Memory] Saved new answer for: {question!r}")
-    return answer
+    return answer, 0
 
 
 # --------------------------------------------------------------- chatbot ----
@@ -269,7 +272,9 @@ def handle_chatbot_flow(
             """)
             logger.info(f"\nJS querySelectorAll found: {result}")
     
-    def submit_text_answer(answer: str) -> bool:
+    def submit_text_answer(answers: list) -> bool:
+        answer = answers[0] if answers else ""
+        logger.info(f"Trying to fill text answer: {answer!r}")
         editable = drawer.locator(
             "div[contenteditable='true']:visible, div.textArea[contenteditable='true']:visible"
         ).first
@@ -278,13 +283,13 @@ def handle_chatbot_flow(
 
             # Step 1: Click to focus and trigger inputContainer-focus class
             editable.click()
-            human_delay(0.1, 0.2, "post-click")
+            # human_delay(0.1, 0.2, "post-click")
 
             # Step 2: Clear existing content, then type naturally so Naukri's JS picks it up
             editable.evaluate("(el) => { el.innerText = ''; el.dispatchEvent(new Event('input', {bubbles: true})); }")
             editable.type(answer, delay=40)  # delay mimics human typing, triggers input events per keystroke
 
-            human_delay(0.1, 0.2, "post-type")
+            # human_delay(0.1, 0.2, "post-type")
 
             # Step 3: Try clicking the send/save button (it's a div, not a <button>)
             # Matches: div.sendMsg, div[class*='send']:not([class*='disabled'])
@@ -310,7 +315,7 @@ def handle_chatbot_flow(
                 except Exception:
                     pass
 
-            human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-text-answer")
+            # human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-text-answer")
             return True
 
         except (PlaywrightTimeoutError, Error):
@@ -336,14 +341,15 @@ def handle_chatbot_flow(
                 text_input.press("Enter")
             except Exception:
                 pass
-            human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-text-answer")
+            # human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-text-answer")
             return True
         except (PlaywrightTimeoutError, Error):
             pass
 
         return False
 
-    def submit_chip_answer(question: str, answer: str) -> bool:
+    def submit_chip_answer(question: str, answer: list) -> bool:
+        logger.info(f"Trying to submit chip answers: {answer!r} for question: {question!r}")
         chips = drawer.locator("div.chatbot_Chip.chipItem:visible")
         chip_count = chips.count()
         if chip_count == 0:
@@ -351,21 +357,22 @@ def handle_chatbot_flow(
 
         def norm(v: str) -> str:
             return " ".join(v.strip().lower().split())
-
-        normalized = norm(answer)
-        for idx in range(chip_count):
-            chip = chips.nth(idx)
-            try:
-                chip_text = norm(chip.inner_text(timeout=1_000))
-            except (PlaywrightTimeoutError, Error):
-                continue
-            if chip_text == normalized:
+        for ans in answer:
+            normalized = norm(ans)
+            logger.info(f"  Normalized answer to match against chips: {norm(ans)!r}")
+            for idx in range(chip_count):
+                chip = chips.nth(idx)
                 try:
-                    chip.click(timeout=2_000)
-                    human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-chip")
-                    return True
+                    chip_text = norm(chip.inner_text(timeout=1_000))
                 except (PlaywrightTimeoutError, Error):
-                    return False
+                    continue
+                if chip_text == normalized:
+                    try:
+                        chip.click(timeout=2_000)
+                        # human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-chip")
+                        return True
+                    except (PlaywrightTimeoutError, Error):
+                        return False
 
         available: list[str] = []
         for idx in range(chip_count):
@@ -391,13 +398,14 @@ def handle_chatbot_flow(
             try:
                 if norm(chip.inner_text(timeout=1_000)) == normalized_corrected:
                     chip.click(timeout=2_000)
-                    human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-corrected-chip")
+                    # human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-corrected-chip")
                     return True
             except (PlaywrightTimeoutError, Error):
                 continue
         return False
 
-    def submit_radio_answer(question: str, answer: str) -> bool: # type: ignore
+    def submit_radio_answer(question: str, answer: list) -> bool:
+        logger.info(f"Trying to submit radio answers: {answer!r} for question: {question!r}")
         options = drawer.locator("div.ssrc__radio-btn-container input[type='radio']")
         option_count = options.count()
         if option_count == 0:
@@ -426,10 +434,15 @@ def handle_chatbot_flow(
                 if n in {val, label}:
                     return opt, oid  # return oid so we can click the label instead
             return None, None
-
-        selected, selected_id = resolve(answer) # type: ignore
+        
+        selected, selected_id = None, None
+        for ans in answer:
+            selected, selected_id = resolve(ans) # type: ignore
+            if selected is not None:
+                break
 
         if selected is None:
+            # TODO: need timeout or some way to break out if there are multiple answers
             corrected = input(
                 f"[QA Memory] No radio match for: {question!r}\n"
                 "Enter option label/value exactly:\n> "
@@ -467,7 +480,7 @@ def handle_chatbot_flow(
             except (PlaywrightTimeoutError, Error):
                 return False
 
-        human_delay(0.2, 0.4, "post-radio-click")
+        # human_delay(0.1, 0.1, "post-radio-click")
 
         # Save button — try multiple selectors since nesting makes it tricky
         saved = False
@@ -486,12 +499,13 @@ def handle_chatbot_flow(
                 continue
 
         if saved:
-            human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-save-radio")
+            # human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-save-radio")
             return True
 
         return False
 
-    def submit_checkbox_answer(question: str, answer: str) -> bool:
+    def submit_checkbox_answer(question: str, answer: list) -> bool:
+        logger.info(f"Trying to submit checkbox answer: {answer!r} for question: {question!r}")
         checkboxes = drawer.locator("div.multicheckboxes-container input[type='checkbox']")
         checkbox_count = checkboxes.count()
         if checkbox_count == 0:
@@ -501,7 +515,7 @@ def handle_chatbot_flow(
             return " ".join(v.strip().lower().split())
 
         # Answer may be comma-separated for multi-select e.g. "Yes, No"
-        desired = {norm(a) for a in answer.split(",") if a.strip()}
+        desired = {norm(a) for a in answer if a.strip()}
 
         matched = []
         for idx in range(checkbox_count):
@@ -569,7 +583,7 @@ def handle_chatbot_flow(
                 except (PlaywrightTimeoutError, Error):
                     pass
 
-        human_delay(0.2, 0.4, "post-checkbox-click")
+        # human_delay(0.2, 0.4, "post-checkbox-click")
 
         # Save button — same selectors as radio
         for sel in [
@@ -581,7 +595,7 @@ def handle_chatbot_flow(
                 btn = drawer.locator(sel).first
                 btn.wait_for(state="visible", timeout=1_500)
                 btn.click(timeout=1_500)
-                human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-save-checkbox")
+                # human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "post-save-checkbox")
                 return True
             except (PlaywrightTimeoutError, Error):
                 continue
@@ -619,22 +633,29 @@ def handle_chatbot_flow(
             return False
         seen_attempts[latest_q] = attempts + 1
         # debug_text_input(drawer)  # <-- run this to debug why text input might not be working
-        answer = get_or_capture_answer(latest_q, qa_memory, memory_path)
+        answer, temp_bool = get_or_capture_answer(latest_q, qa_memory, memory_path)
         
         # TODO: add ability to apply answers for substring matches in radio, chip and checkbox handlers as well
-        handled = submit_text_answer(answer)
-        if not handled:
-            handled = submit_radio_answer(latest_q, answer)
-        if not handled:
-            handled = submit_chip_answer(latest_q, answer)
-        if not handled:
-            handled = submit_checkbox_answer(latest_q, answer)
-        if not handled:
+        if temp_bool == 1:
+            answers = [x.strip() for x in answer.split(",")]
+            logger.info(f"Using template answer split into: {answers} with question: {latest_q!r}")
+        else:
+            answers = [answer]
+        
+        # Define your submission strategies in order of priority
+        submission_methods = [
+            lambda ans: submit_text_answer(ans),
+            lambda ans: submit_radio_answer(latest_q, ans),
+            lambda ans: submit_chip_answer(latest_q, ans),
+            lambda ans: submit_checkbox_answer(latest_q, ans),
+        ]
+
+        for submit in submission_methods:
+            if submit(answers):
+               break
+        else:
             logger.info(f"No handler matched for question: {latest_q!r}")
-            return False
-
-        human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "between chatbot turns")
-
+            # TODO: IDK what should be here?
     return application_confirmed(timeout_ms=8_000)
 
 
@@ -649,7 +670,7 @@ def switch_tab(page, tab_id: str) -> bool:
     try:
         tab.wait_for(state="visible", timeout=5_000)
         tab.click()
-        human_delay(0.5, 1.0, f"after clicking tab {tab_id}")
+        # human_delay(0.5, 1.0, f"after clicking tab {tab_id}")
         # Wait for at least one job tuple or a "no jobs" indicator.
         page.wait_for_load_state("networkidle", timeout=10_000)
         return True
@@ -800,7 +821,7 @@ def handle_post_bulk_apply(
             state.failed_links.append(f"recommended:{job_label}")
             logger.info(f"Chatbot flow incomplete for: {job_label!r}")
 
-        human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "between chatbot rounds")
+        # human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "between chatbot rounds")
 
         # After a chatbot completes, Naukri may close the drawer and open the
         # next one, or navigate back to the listings.  Give the page time to settle.
@@ -841,7 +862,7 @@ def run_tab(
             # De-select by reloading the page and try again next cycle.
             logger.info("Could not click apply button; reloading page.")
             page.reload(wait_until="domcontentloaded", timeout=20_000)
-            human_delay(1.0, 2.0, "after reload")
+            # human_delay(1.0, 2.0, "after reload")
             if not switch_tab(page, tab_id):
                 break
             continue
@@ -859,13 +880,13 @@ def run_tab(
         # that newly loaded / remaining jobs are visible.
         logger.info("Returning to recommendations page…")
         with_retry(lambda: page.goto(RECOMMENDED_JOBS_URL, wait_until="domcontentloaded", timeout=30_000))
-        human_delay(1.0, 2.0, "after returning to recommendations page")
+        # human_delay(1.0, 2.0, "after returning to recommendations page")
 
         if not switch_tab(page, tab_id):
             logger.info(f"Could not re-activate tab {tab_id!r} after returning.")
             break
 
-        human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "after tab switch")
+        # human_delay(delay_config.min_delay_seconds, delay_config.max_delay_seconds, "after tab switch")
 
 
 def save_results(state: ApplyState) -> None:
