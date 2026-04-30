@@ -22,13 +22,32 @@ import pandas as pd
 import random
 
 # Set up logging to a file with timestamps
-logging.basicConfig(
-    filename=f"Logs/naukri_recommended_apply_{time.strftime('%Y-%m-%d_%H-%M-%S')}.log",
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+LOG_DIR = Path("Logs")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+general_logfile = LOG_DIR / f"naukri_recommended_apply_{time.strftime('%Y-%m-%d_%H-%M-%S')}.log"
+applied_logfile = LOG_DIR / "naukri_jobs_applied.log"
+
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+general_handler = logging.FileHandler(general_logfile, mode="a", encoding="utf-8")
+general_handler.setFormatter(formatter)
+general_handler.setLevel(logging.INFO)
+
+applied_handler = logging.FileHandler(applied_logfile, mode="a", encoding="utf-8")
+applied_handler.setFormatter(formatter)
+applied_handler.setLevel(logging.INFO)
+
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(general_handler)
+logger.propagate = False
+
+logger2 = logging.getLogger("applied_jobs_logger")
+logger2.setLevel(logging.INFO)
+logger2.addHandler(applied_handler)
+logger2.propagate = False
+
 # ---------- re-use delay helpers from the original bot ----------
 # If delay_utils.py is on the path, import it; otherwise fall back to stubs.
 
@@ -715,17 +734,36 @@ def select_next_batch(page, batch_size: int = 5) -> list[str]:
     for idx in range(to_select):
         checkbox_div = unselected.nth(idx)
         try:
-            # Retrieve the parent article's job id for logging before clicking.
-            article = page.locator(
-                "article.jobTuple div.saveJobContainer.tuple-check-box:has(i.naukicon-ot-checkbox)"
-            ).nth(idx)
-            # Walk up to the article element to read data-job-id.
-            job_id = checkbox_div.evaluate(
-                "el => el.closest('article[data-job-id]')?.getAttribute('data-job-id') || 'unknown'"
+            # Extract metadata from the parent job article for logging.
+            job_meta = checkbox_div.evaluate(
+                """
+                el => {
+                    const article = el.closest('article[data-job-id]');
+                    if (!article) {
+                        return {id: 'unknown', title: 'unknown', company: 'unknown', location: 'unknown'};
+                    }
+                    const titleEl = article.querySelector('p.title, .jobTupleHeader .title');
+                    const companyEl = article.querySelector('span.companyWrapper span[title], span.dspIB.valignM.subTitle.ellipsis.dspIB.rm-cursor-pointer[title], div.companyInfo span[title]');
+                    const locationEl = article.querySelector('li.placeHolderLi.location span[title], li.location span[title], li.placeHolderLi.location span, li.location span');
+                    const title = titleEl?.title?.trim() || titleEl?.innerText?.trim() || 'unknown';
+                    const company = companyEl?.title?.trim() || companyEl?.innerText?.trim() || 'unknown';
+                    const location = locationEl?.title?.trim() || locationEl?.innerText?.trim() || 'unknown';
+                    return {
+                        id: article.getAttribute('data-job-id') || 'unknown',
+                        title,
+                        company,
+                        location,
+                    };
+                }
+                """
             )
+            job_id = job_meta.get('id', 'unknown')
             checkbox_div.click(timeout=3_000)
             selected_ids.append(job_id)
             logger.info(f"  Selected job {job_id} ({idx + 1}/{to_select})")
+            logger2.info(
+                f"Applied job: {job_meta.get('title', 'unknown')} | {job_meta.get('company', 'unknown')} | {job_meta.get('location', 'unknown')}"
+            )
             time.sleep(0.15)  # tiny gap to avoid triggering rate limits
         except (PlaywrightTimeoutError, Error) as exc:
             logger.info(f"  Could not select job at index {idx}: {exc}")
