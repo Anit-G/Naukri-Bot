@@ -51,7 +51,6 @@ logger2.propagate = False
 # ---------- re-use delay helpers from the original bot ----------
 # If delay_utils.py is on the path, import it; otherwise fall back to stubs.
 
-
 def human_delay(min_s: float, max_s: float, label: str = "") -> None:  # type: ignore[misc]
     if max_s > 0:
         t = random.uniform(min_s, max_s)
@@ -156,6 +155,7 @@ def load_template_qa_memory() -> dict[tuple[str, ...], str]:
     # TODO: add support for answering radio/chip/checkbox questions based on keyword matches, not just free text ones
     # TODO: log job titles applied to with links and skip all job titles with certain keywords in them (e.g. "consultant", "manager", etc.)
     template_qa = {tuple(["how many years of", "experience"]) : "3 years,3-5 years,2-3 years,3-5,1-3 years,1-3",
+                   tuple(["total years of", "experience"]) : "3 years,3-5 years,2-3 years,3-5,1-3 years,1-3",
                    tuple(["do you have", "experience", "in"]) : "yes",
                    tuple(["current","ctc"]) : "20 LPA",
                    tuple(["expected","ctc"]) : "30 LPA",
@@ -740,30 +740,61 @@ def select_next_batch(page, batch_size: int = 5) -> list[str]:
                 el => {
                     const article = el.closest('article[data-job-id]');
                     if (!article) {
-                        return {id: 'unknown', title: 'unknown', company: 'unknown', location: 'unknown'};
+                        return {id: 'unknown', title: 'unknown', company: 'unknown', location: 'unknown', experience: 'unknown', requirements: 'unknown', description: 'unknown'};
                     }
+
+                    // Selectors for existing fields
                     const titleEl = article.querySelector('p.title, .jobTupleHeader .title');
                     const companyEl = article.querySelector('span.companyWrapper span[title], span.dspIB.valignM.subTitle.ellipsis.dspIB.rm-cursor-pointer[title], div.companyInfo span[title]');
                     const locationEl = article.querySelector('li.placeHolderLi.location span[title], li.location span[title], li.placeHolderLi.location span, li.location span');
+                    
+                    // New Selectors for requested fields
+                    const expEl = article.querySelector('li.experience span');
+                    const descEl = article.querySelector('.job-description span');
+                    const reqEls = Array.from(article.querySelectorAll('ul.tags li'));
+
+                    // Text extraction with Fallbacks
                     const title = titleEl?.title?.trim() || titleEl?.innerText?.trim() || 'unknown';
                     const company = companyEl?.title?.trim() || companyEl?.innerText?.trim() || 'unknown';
                     const location = locationEl?.title?.trim() || locationEl?.innerText?.trim() || 'unknown';
+                    
+                    const experience = expEl?.innerText?.trim() || expEl?.title?.trim() || 'unknown';
+                    // Description often has full text in the 'title' attribute if it is truncated in UI
+                    const description = descEl?.getAttribute('title')?.trim() || descEl?.innerText?.trim() || 'unknown';
+                    // Join requirements list into a comma-separated string
+                    const requirements = reqEls.length > 0 ? reqEls.map(li => li.innerText.trim()).join(', ') : 'unknown';
+
                     return {
                         id: article.getAttribute('data-job-id') || 'unknown',
                         title,
                         company,
                         location,
+                        experience,
+                        requirements,
+                        description
                     };
                 }
                 """
             )
+
             job_id = job_meta.get('id', 'unknown')
-            checkbox_div.click(timeout=3_000)
+            checkbox_div.click(timeout=3000)
             selected_ids.append(job_id)
-            logger.info(f"  Selected job {job_id} ({idx + 1}/{to_select})")
+
+            # Detailed Logging
+            logger.info(f"Selected job {job_id} ({idx + 1}/{to_select})")
             logger2.info(
-                f"Applied job: {job_meta.get('title', 'unknown')} | {job_meta.get('company', 'unknown')} | {job_meta.get('location', 'unknown')}"
+                f"Applied job: {job_meta.get('title')} | {job_meta.get('company')} | {job_meta.get('location')}\n"
+                f"Exp: {job_meta.get('experience')} | Skills: {job_meta.get('requirements')}\n"
+                f"Desc: {job_meta.get('description')[:150]}..." # Truncated for log readability
             )
+            applied_dict = {"Applied Job": job_meta.get('title', 'unknown'), 
+                            "Company Name": job_meta.get('company', 'unknown'), 
+                            "Job Location": job_meta.get('location', 'unknown'),
+                            "Experience Range": job_meta.get('experience'),
+                            "Skills":job_meta.get('requirements'),
+                            "Desc": job_meta.get('description')}
+            pd.DataFrame.from_dict(applied_dict).to_csv(CSV_FILE, mode='a', index=True, header=False)
             time.sleep(0.15)  # tiny gap to avoid triggering rate limits
         except (PlaywrightTimeoutError, Error) as exc:
             logger.info(f"  Could not select job at index {idx}: {exc}")
@@ -983,4 +1014,5 @@ def run() -> None:
 
 
 if __name__ == "__main__":
+    logger2.info("Starting Naukri recommended-jobs auto-apply bot")
     run()
