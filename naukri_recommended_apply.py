@@ -155,16 +155,17 @@ def load_template_qa_memory() -> dict[tuple[str, ...], str]:
     # TODO: add support for answering radio/chip/checkbox questions based on keyword matches, not just free text ones
     # TODO: log job titles applied to with links and skip all job titles with certain keywords in them (e.g. "consultant", "manager", etc.)
     template_qa = {tuple(["how many years of", "experience"]) : "3 years,3-5 years,2-3 years,3-5,1-3 years,1-3",
-                   tuple(["total years of", "experience"]) : "3 years,3-5 years,2-3 years,3-5,1-3 years,1-3",
+                   tuple(["total years of", "experience"]) : "3 years,3-5 years,2-3 years,3-5,1-3 years,1-3, Less than 5",
+                   tuple(["relevant years of", "experience"]) : "3 years,3-5 years,2-3 years,3-5,1-3 years,1-3, Less than 5, 2-10",
                    tuple(["do you have", "experience", "in"]) : "yes",
                    tuple(["current","ctc"]) : "20 LPA",
                    tuple(["expected","ctc"]) : "30 LPA",
                    tuple(["are you currently"]) : "yes",
                    tuple(["current location"]) : "Bangalore",
                    tuple(["currently", "residing"]) : "Bengaluru,Bangalore",
-                   tuple(["willing to relocate"]) : "yes",
+                   tuple(["relocate"]) : "yes",
                    tuple(["notice", "period"]) : "2 months,1 month,30 days",
-                   tuple(["pan", "number"]) : "HWULX6881T",}
+                   tuple(["pan", "number"]) : "HWUPV6881T",}
     return template_qa
 
 def save_qa_memory(path: Path, qa_memory: dict[str, str]) -> None:
@@ -794,7 +795,7 @@ def select_next_batch(page, batch_size: int = 5) -> list[str]:
                             "Experience Range": job_meta.get('experience'),
                             "Skills":job_meta.get('requirements'),
                             "Desc": job_meta.get('description')}
-            pd.DataFrame.from_dict(applied_dict).to_csv(CSV_FILE, mode='a', index=True, header=False)
+            pd.DataFrame([applied_dict]).to_csv(CSV_FILE, mode='a', index=False, header=False)
             time.sleep(0.15)  # tiny gap to avoid triggering rate limits
         except (PlaywrightTimeoutError, Error) as exc:
             logger.info(f"  Could not select job at index {idx}: {exc}")
