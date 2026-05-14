@@ -18,6 +18,7 @@ import argparse
 import json
 import time
 import logging
+import csv
 import pandas as pd
 import random
 
@@ -154,9 +155,9 @@ def load_template_qa_memory() -> dict[tuple[str, ...], str]:
     # TODO: select one of many answers
     # TODO: add support for answering radio/chip/checkbox questions based on keyword matches, not just free text ones
     # TODO: log job titles applied to with links and skip all job titles with certain keywords in them (e.g. "consultant", "manager", etc.)
-    template_qa = {tuple(["how many years of", "experience"]) : "3 years,3-5 years,2-3 years,3-5,1-3 years,1-3",
-                   tuple(["total years of", "experience"]) : "3 years,3-5 years,2-3 years,3-5,1-3 years,1-3, Less than 5",
-                   tuple(["relevant years of", "experience"]) : "3 years,3-5 years,2-3 years,3-5,1-3 years,1-3, Less than 5, 2-10",
+    template_qa = {tuple(["how many years of", "experience"]) : "3 years,3-5 years,3-8 years,2-3 years,3-5,1-3 years,1-3",
+                   tuple(["total years of", "experience"]) : "3 years,3-5 years,3-8 years,2-3 years,3-5,1-3 years,1-3, Less than 5",
+                   tuple(["relevant years of", "experience"]) : "3 years,3-5 years,3-8 years,2-3 years,3-5,1-3 years,1-3, Less than 5, 2-10",
                    tuple(["do you have", "experience", "in"]) : "yes",
                    tuple(["current","ctc"]) : "20 LPA",
                    tuple(["expected","ctc"]) : "30 LPA",
@@ -795,7 +796,10 @@ def select_next_batch(page, batch_size: int = 5) -> list[str]:
                             "Experience Range": job_meta.get('experience'),
                             "Skills":job_meta.get('requirements'),
                             "Desc": job_meta.get('description')}
-            pd.DataFrame([applied_dict]).to_csv(CSV_FILE, mode='a', index=False, header=False)
+            fieldnames = applied_dict.keys()
+            with open(CSV_FILE, 'a', newline='') as f:
+                writer =  csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writerow(applied_dict)
             time.sleep(0.15)  # tiny gap to avoid triggering rate limits
         except (PlaywrightTimeoutError, Error) as exc:
             logger.info(f"  Could not select job at index {idx}: {exc}")
